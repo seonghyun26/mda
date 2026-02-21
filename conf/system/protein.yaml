@@ -1,0 +1,10 @@
+name: protein
+forcefield: charmm36m   # or amber99sb-ildn, amber14sb, etc.
+water_model: tip3p       # tip3p, tip4p, spc, spce
+box_type: dodecahedron
+box_distance: 1.2        # nm — minimum distance from solute to box edge
+
+# File paths (relative to work_dir, or absolute)
+topology: system.top
+coordinates: system.gro
+index: index.ndx          # optional; set to null if not needed

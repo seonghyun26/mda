@@ -1,0 +1,27 @@
+# Collective variable definitions — each entry maps to a PLUMED action block
+# Atom indices are 1-based (PLUMED convention)
+# Used by both metadynamics and umbrella sampling tools
+
+cvs:
+  - name: d1
+    type: DISTANCE
+    atoms: [1, 100]           # atom serial numbers (1-indexed)
+
+  # Uncomment for backbone torsion CVs (alanine dipeptide example)
+  # - name: phi
+  #   type: TORSION
+  #   atoms: [5, 7, 9, 15]
+  #
+  # - name: psi
+  #   type: TORSION
+  #   atoms: [7, 9, 15, 17]
+
+  # Uncomment for RMSD CV
+  # - name: rmsd1
+  #   type: RMSD
+  #   reference: reference.pdb
+  #   rmsd_type: OPTIMAL
+
+# COLVAR output settings (applied to all CVs)
+colvar_stride: 100   # steps between COLVAR output lines
+colvar_file: COLVAR

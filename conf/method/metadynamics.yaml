@@ -1,0 +1,17 @@
+_target_name: metadynamics
+
+# Well-tempered metadynamics via PLUMED
+hills:
+  height: 1.2         # kJ/mol — Gaussian height
+  sigma: [0.35]       # one value per CV (in CV units: nm for distance, rad for torsion)
+  pace: 500           # steps between hill depositions
+  biasfactor: 10      # well-tempered factor; set to null for standard (non-WT) metadynamics
+  temp: ${gromacs.temperature}  # K — interpolated from gromacs config
+
+nsteps: 50000000      # 100 ns at dt=0.002 ps
+
+convergence_check_interval: 1000000  # check FES convergence every 2 ns
+
+analysis:
+  fes_bins: 100
+  min_bias_correction: true

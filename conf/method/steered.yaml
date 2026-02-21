@@ -1,0 +1,13 @@
+_target_name: steered_md
+
+pull:
+  rate: 0.005           # nm/ps — pulling velocity
+  force_constant: 500.0 # kJ/mol/nm^2 — spring constant
+  direction: null       # [x, y, z] unit vector; null = auto from CV definition
+
+nsteps: 5000000         # 10 ns at dt=0.002 ps
+
+output:
+  pull_force_file: pullf.xvg
+  pull_coord_file: pullx.xvg
+  stride: 100           # steps between pull output frames

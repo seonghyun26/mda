@@ -1,0 +1,20 @@
+_target_name: umbrella_sampling
+
+windows:
+  start: 0.0          # nm — start of reaction coordinate
+  end: 4.0            # nm — end of reaction coordinate
+  spacing: 0.2        # nm — window center spacing
+  n_windows: null     # computed from start/end/spacing if null
+
+restraint:
+  force_constant: 1000.0   # kJ/mol/nm^2
+  pull_rate: 0.01          # nm/ps — for initial pulling to place windows
+
+nsteps_per_window: 5000000   # 10 ns per window at dt=0.002 ps
+equilibration_steps: 500000  # 1 ns equilibration per window (not used for WHAM)
+
+wham:
+  bins: 200
+  tolerance: 1.0e-6
+  temperature: ${gromacs.temperature}
+  bootstrap_samples: 0  # 0 = no bootstrapping; >0 for error estimation

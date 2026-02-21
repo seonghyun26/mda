@@ -1,0 +1,24 @@
+defaults:
+  - method: metadynamics
+  - gromacs: default
+  - plumed/collective_variables: default
+  - system: protein
+  - wandb: default
+  - _self_
+
+mode: run  # run | reproduce_paper | interactive
+
+run:
+  work_dir: outputs/${now:%Y-%m-%d_%H-%M-%S}
+  name: ${method._target_name}_${system.name}
+  seed: 42
+  resume: false
+  max_steps: null  # null = use method default
+
+paper:
+  query: null       # Natural language search query
+  arxiv_id: null    # ArXiv paper ID e.g. "2301.12345"
+  doi: null
+  pdf_path: null    # Local PDF path for manual input
+  text: null        # Paste paper text directly
+  auto_run_after_extract: false  # Always require confirmation before running

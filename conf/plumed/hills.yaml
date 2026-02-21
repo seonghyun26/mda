@@ -1,0 +1,2 @@
+# HILLS file settings (used by metadynamics)
+hills_file: HILLS

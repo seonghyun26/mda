@@ -1,0 +1,53 @@
+# GROMACS MDP parameters — keys map 1:1 to MDP file keywords
+# Underscores in Hydra keys are converted to hyphens in the .mdp output
+# where GROMACS requires them (handled by hydra_utils.MDP_KEY_MAP)
+
+integrator: md
+dt: 0.002               # ps (2 fs timestep)
+temperature: 300        # K
+pressure: 1.0           # bar
+nsteps: 50000000        # overridden by method.nsteps at runtime
+
+# Thermostat
+tcoupl: V-rescale
+tc_grps:
+  - Protein
+  - Non-Protein
+tau_t:
+  - 0.1
+  - 0.1
+ref_t:
+  - ${gromacs.temperature}
+  - ${gromacs.temperature}
+
+# Barostat
+pcoupl: Parrinello-Rahman
+pcoupltype: isotropic
+tau_p: 2.0
+ref_p: ${gromacs.pressure}
+compressibility: 4.5e-5
+
+# Neighbor searching
+cutoff_scheme: Verlet
+nstlist: 10
+rcoulomb: 1.2           # nm
+rvdw: 1.2               # nm
+
+# Electrostatics
+coulombtype: PME
+pme_order: 4
+fourierspacing: 0.16    # nm
+
+# Constraints
+constraints: h-bonds
+constraint_algorithm: LINCS
+lincs_iter: 1
+lincs_order: 4
+
+# Output frequencies (steps)
+nstxout: 5000
+nstvout: 5000
+nstfout: 0
+nstlog: 1000
+nstxout_compressed: 5000
+nstenergy: 1000         # keep aligned with wandb.log_interval_steps

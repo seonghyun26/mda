@@ -1,0 +1,22 @@
+project: prj-mda
+entity: null            # defaults to wandb login entity
+group: null
+tags: []
+notes: ""
+
+# Monitoring settings
+log_interval_steps: 1000    # parse .edr/.log every N steps (match gromacs.nstenergy)
+watch_log_file: true        # tail GROMACS .log in background
+watch_colvar_file: true     # tail PLUMED COLVAR file
+watch_hills_file: true      # log HILLS deposition count
+poll_interval_s: 30.0       # seconds between monitor polls
+
+# Which energy terms to extract from .edr and log
+energy_terms:
+  - Potential
+  - Kinetic En.
+  - Temperature
+  - Pressure
+  - Volume
+  - Density
+  - Total Energy

@@ -1,0 +1,9 @@
+name: membrane
+forcefield: charmm36
+water_model: tip3p
+box_type: triclinic
+box_distance: 1.5        # nm
+
+topology: system.top
+coordinates: system.gro
+index: index.ndx
