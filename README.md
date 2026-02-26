@@ -1,4 +1,4 @@
-# prj-mda
+# prj-amd
 
 A Claude Opus 4.6-powered agent for running enhanced sampling molecular dynamics simulations with GROMACS + PLUMED.
 
@@ -12,7 +12,7 @@ A Claude Opus 4.6-powered agent for running enhanced sampling molecular dynamics
 
 | Software | Install |
 |---|---|
-| Python 3.10+ | `conda create -n mda python=3.11` |
+| Python 3.10+ | `conda create -n amd python=3.11` |
 | GROMACS 2023+ | [gromacs.org](https://www.gromacs.org/Downloads.html) |
 | PLUMED 2.9+ | [plumed.org](https://www.plumed.org) — patch GROMACS with `plumed patch -p` |
 | Anthropic API key | `export ANTHROPIC_API_KEY=sk-ant-...` |
@@ -21,8 +21,8 @@ A Claude Opus 4.6-powered agent for running enhanced sampling molecular dynamics
 ## Installation
 
 ```bash
-git clone <repo-url> prj-mda
-cd prj-mda
+git clone <repo-url> prj-amd
+cd prj-amd
 pip install -r requirements.txt
 ```
 
@@ -87,7 +87,7 @@ python main.py gromacs.temperature=310 method.hills.height=0.8 wandb.project=my_
 ## Project Structure
 
 ```
-prj-mda/
+prj-amd/
 ├── conf/               # Hydra config files
 ├── md_agent/
 │   ├── agent.py        # Claude Opus 4.6 agentic loop (25 tools)

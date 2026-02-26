@@ -12,37 +12,38 @@ interface Props {
   onSelectSession?: (id: string) => void;
 }
 
-// ── Inline nickname editor ─────────────────────────────────────────────
+// ── Session list item ──────────────────────────────────────────────────
 
-function NicknameEditor({
-  sessionId,
-  nickname,
+function SessionItem({
+  s,
+  isActive,
+  onSelect,
   onSaved,
 }: {
-  sessionId: string;
-  nickname: string;
+  s: { session_id: string; work_dir: string; nickname: string };
+  isActive: boolean;
+  onSelect: () => void;
   onSaved: (nick: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(nickname);
+  const nick = s.nickname || s.work_dir.split("/").pop() || s.session_id.slice(0, 8);
+  const [draft, setDraft] = useState(nick);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const startEdit = (e: React.MouseEvent) => {
     e.stopPropagation();
-    setDraft(nickname);
+    setDraft(nick);
     setEditing(true);
     setTimeout(() => inputRef.current?.select(), 0);
   };
 
   const save = async (e?: React.MouseEvent) => {
     e?.stopPropagation();
-    const trimmed = draft.trim() || nickname;
+    const trimmed = draft.trim() || nick;
     try {
-      await updateNickname(sessionId, trimmed);
+      await updateNickname(s.session_id, trimmed);
       onSaved(trimmed);
-    } catch {
-      // ignore
-    }
+    } catch { /* ignore */ }
     setEditing(false);
   };
 
@@ -51,44 +52,55 @@ function NicknameEditor({
     setEditing(false);
   };
 
-  const handleKey = (e: React.KeyboardEvent) => {
-    e.stopPropagation();
-    if (e.key === "Enter") save();
-    if (e.key === "Escape") { setEditing(false); }
-  };
-
-  if (editing) {
-    return (
-      <div className="flex items-center gap-1 w-full" onClick={(e) => e.stopPropagation()}>
-        <input
-          ref={inputRef}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={handleKey}
-          autoFocus
-          className="flex-1 min-w-0 text-xs bg-gray-700 border border-gray-600 rounded px-1.5 py-0.5 text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-        />
-        <button onClick={save} className="text-emerald-400 hover:text-emerald-300 flex-shrink-0">
-          <Check size={11} />
-        </button>
-        <button onClick={cancel} className="text-gray-500 hover:text-gray-400 flex-shrink-0">
-          <X size={11} />
-        </button>
-      </div>
-    );
-  }
-
   return (
-    <span className="flex items-center gap-1 min-w-0 group/name">
-      <span className="text-xs font-medium truncate">{nickname || "Unnamed"}</span>
-      <button
-        onClick={startEdit}
-        className="opacity-0 group-hover/name:opacity-100 text-gray-600 hover:text-gray-400 transition-opacity flex-shrink-0"
-        title="Rename"
-      >
-        <Pencil size={9} />
-      </button>
-    </span>
+    <div
+      onClick={() => !editing && onSelect()}
+      className={`group relative w-full rounded-lg transition-colors cursor-pointer ${
+        isActive ? "bg-gray-800 text-white" : "text-gray-400 hover:bg-gray-800/60 hover:text-gray-200"
+      }`}
+    >
+      <div className="px-3 py-2.5">
+        <div className="flex items-center gap-1.5 mb-0.5">
+          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-transparent"}`} />
+          {editing ? (
+            <div className="flex items-center gap-1 flex-1 min-w-0" onClick={(e) => e.stopPropagation()}>
+              <input
+                ref={inputRef}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === "Enter") save();
+                  if (e.key === "Escape") setEditing(false);
+                }}
+                autoFocus
+                className="flex-1 min-w-0 text-xs bg-gray-700 border border-gray-600 rounded px-1.5 py-0.5 text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              <button onClick={save} className="text-emerald-400 hover:text-emerald-300 flex-shrink-0">
+                <Check size={11} />
+              </button>
+              <button onClick={cancel} className="text-gray-500 hover:text-gray-400 flex-shrink-0">
+                <X size={11} />
+              </button>
+            </div>
+          ) : (
+            <>
+              <span className="text-xs font-medium truncate flex-1">{nick}</span>
+              <button
+                onClick={startEdit}
+                className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-gray-300 transition-opacity flex-shrink-0"
+                title="Rename"
+              >
+                <Pencil size={10} />
+              </button>
+            </>
+          )}
+        </div>
+        {!editing && (
+          <div className="pl-3 text-[10px] text-gray-600 font-mono truncate">{s.session_id.slice(0, 8)}…</div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -200,40 +212,15 @@ export default function SessionSidebar({ onNewSession, onSelectSession }: Props)
           <p className="text-[11px] text-gray-600 px-3 py-2">No sessions yet</p>
         ) : (
           <div className="space-y-0.5">
-            {sessions.map((s) => {
-              const isActive = s.session_id === sessionId;
-              return (
-                <button
-                  key={s.session_id}
-                  onClick={() => {
-                    switchSession(s.session_id, s.work_dir);
-                    onSelectSession?.(s.session_id);
-                  }}
-                  className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors group ${
-                    isActive
-                      ? "bg-gray-800 text-white"
-                      : "text-gray-400 hover:bg-gray-800/60 hover:text-gray-200"
-                  }`}
-                >
-                  {/* Active indicator */}
-                  <div className="flex items-center gap-1.5 mb-0.5">
-                    <span
-                      className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                        isActive ? "bg-blue-500" : "bg-transparent"
-                      }`}
-                    />
-                    <NicknameEditor
-                      sessionId={s.session_id}
-                      nickname={s.nickname || s.work_dir.split("/").pop() || s.session_id.slice(0, 8)}
-                      onSaved={(nick) => updateSessionNickname(s.session_id, nick)}
-                    />
-                  </div>
-                  <div className="pl-3 text-[10px] text-gray-600 font-mono truncate">
-                    {s.session_id.slice(0, 8)}…
-                  </div>
-                </button>
-              );
-            })}
+            {sessions.map((s) => (
+              <SessionItem
+                key={s.session_id}
+                s={s}
+                isActive={s.session_id === sessionId}
+                onSelect={() => { switchSession(s.session_id, s.work_dir); onSelectSession?.(s.session_id); }}
+                onSaved={(nick) => updateSessionNickname(s.session_id, nick)}
+              />
+            ))}
           </div>
         )}
       </div>

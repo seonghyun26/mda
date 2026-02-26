@@ -40,7 +40,6 @@ import {
   downloadUrl,
   getFileContent,
   createSession,
-  updateNickname,
 } from "@/lib/api";
 import { useSessionStore } from "@/store/sessionStore";
 
@@ -69,7 +68,7 @@ const PRESETS: Preset[] = [
   { id: "md",        label: "Molecular Dynamics",  description: "Unbiased MD — no enhanced sampling", tag: "MD" },
   { id: "metad",     label: "Metadynamics",         description: "Well-tempered metadynamics with PLUMED", tag: "MetaD" },
   { id: "umbrella",  label: "Umbrella Sampling",    description: "Umbrella sampling along a reaction coordinate", tag: "US" },
-  { id: "undefined", label: "Undefined",            description: "Blank — configure everything with the assistant", tag: "" },
+  { id: "undefined", label: "Blank",                description: "Blank — configure everything with the assistant", tag: "" },
 ];
 
 // ── System options ─────────────────────────────────────────────────────
@@ -77,9 +76,9 @@ const PRESETS: Preset[] = [
 interface SystemOption { id: string; label: string; description: string }
 
 const SYSTEMS: SystemOption[] = [
-  { id: "protein",       label: "Protein",          description: "Solvated protein · TIP3P · dodecahedron box" },
-  { id: "membrane",      label: "Membrane",          description: "Lipid bilayer system · CHARMM36 · triclinic box" },
-  { id: "ala_dipeptide", label: "Alanine Dipeptide", description: "Alanine dipeptide · vacuum · CHARMM36m" },
+  { id: "ala_dipeptide", label: "Alanine Dipeptide",    description: "Alanine dipeptide · vacuum · CHARMM36m" },
+  { id: "chignolin",     label: "Chignolin (CLN025)",   description: "CLN025 mini-protein · implicit solvent" },
+  { id: "blank",         label: "Blank",                description: "No system — configure manually" },
 ];
 
 // ── GROMACS templates ──────────────────────────────────────────────────
@@ -87,10 +86,10 @@ const SYSTEMS: SystemOption[] = [
 interface GmxTemplate { id: string; label: string; description: string }
 
 const GMX_TEMPLATES: GmxTemplate[] = [
-  { id: "default",    label: "Default",           description: "Standard production MD · explicit water · PME" },
-  { id: "nvt",        label: "NVT",               description: "Canonical ensemble · constant volume · 100 ps" },
-  { id: "npt",        label: "NPT",               description: "Isobaric ensemble · Parrinello–Rahman barostat" },
-  { id: "ala_vacuum", label: "Vacuum (Ala-dip.)", description: "Dodecahedron vacuum box · no solvent · fast" },
+  { id: "ala_vacuum", label: "Vacuum",  description: "Dodecahedron vacuum box · no solvent · fast" },
+  { id: "nvt",        label: "NVT",     description: "Canonical ensemble · constant volume · 100 ps" },
+  { id: "npt",        label: "NPT",     description: "Isobaric ensemble · Parrinello–Rahman barostat" },
+  { id: "blank",      label: "Blank",   description: "No template — configure manually" },
 ];
 
 // ── UI primitives ─────────────────────────────────────────────────────
@@ -229,53 +228,9 @@ function PillTabs({
 
 function ProgressTab({ sessionId }: { sessionId: string }) {
   const [agentOpen, setAgentOpen] = useState(false);
-  const { sessions, updateSessionNickname } = useSessionStore();
-  const session = sessions.find((s) => s.session_id === sessionId);
-  const [nickDraft, setNickDraft] = useState(session?.nickname ?? "");
-  const [nickSaved, setNickSaved] = useState(false);
-
-  // Keep draft in sync when session list loads
-  useEffect(() => {
-    if (session?.nickname) setNickDraft(session.nickname);
-  }, [session?.nickname]);
-
-  const saveNickname = async () => {
-    const trimmed = nickDraft.trim();
-    if (!trimmed || trimmed === session?.nickname) return;
-    try {
-      await updateNickname(sessionId, trimmed);
-      updateSessionNickname(sessionId, trimmed);
-      setNickSaved(true);
-      setTimeout(() => setNickSaved(false), 2000);
-    } catch { /* ignore */ }
-  };
 
   return (
     <div className="p-4 space-y-4">
-      {/* Editable session name */}
-      <div className="rounded-xl border border-gray-700/60 bg-gray-900/60 p-3">
-        <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Session Name</label>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={nickDraft}
-            onChange={(e) => { setNickDraft(e.target.value); setNickSaved(false); }}
-            onKeyDown={(e) => { if (e.key === "Enter") saveNickname(); }}
-            className="flex-1 border border-gray-700 rounded-lg px-3 py-1.5 bg-gray-800 text-gray-100 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-          <button
-            onClick={saveNickname}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1 transition-all flex-shrink-0 ${
-              nickSaved
-                ? "bg-emerald-700/30 text-emerald-400 border border-emerald-700/50"
-                : "bg-blue-600 hover:bg-blue-700 text-white"
-            }`}
-          >
-            {nickSaved ? <><CheckCircle2 size={11} /> Saved</> : "Save"}
-          </button>
-        </div>
-      </div>
-
       {/* Status + agent button */}
       <div className="flex items-center justify-between">
         <span className="text-xs font-semibold text-gray-400">Simulation Status</span>
@@ -708,8 +663,8 @@ function NewSessionForm({
 }) {
   const [nickname, setNickname] = useState(defaultNickname);
   const [preset, setPreset] = useState("md");
-  const [system, setSystem] = useState("protein");
-  const [gromacs, setGromacs] = useState("default");
+  const [system, setSystem] = useState("ala_dipeptide");
+  const [gromacs, setGromacs] = useState("ala_vacuum");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -857,11 +812,12 @@ function NewSessionForm({
 
 interface Props {
   sessionId: string | null;
+  showNewForm: boolean;
   onSessionCreated: (id: string, workDir: string, nickname: string) => void;
   onStartMD: () => void;
 }
 
-export default function MDWorkspace({ sessionId, onSessionCreated, onStartMD }: Props) {
+export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, onStartMD }: Props) {
   const [cfg, setCfg] = useState<Record<string, unknown>>({});
   const [saved, setSaved] = useState(false);
   const [activeTab, setActiveTab] = useState("progress");
@@ -874,11 +830,16 @@ export default function MDWorkspace({ sessionId, onSessionCreated, onStartMD }: 
   }, [sessionId]);
 
   const handleChange = (dotKey: string, value: unknown) => {
-    const [section, key] = dotKey.split(".");
-    setCfg((c) => ({
-      ...c,
-      [section]: { ...(c[section] as object ?? {}), [key]: value },
-    }));
+    const [section, ...rest] = dotKey.split(".");
+    setCfg((c) => {
+      const setDeep = (obj: Record<string, unknown>, parts: string[]): Record<string, unknown> => {
+        const [head, ...tail] = parts;
+        return tail.length === 0
+          ? { ...obj, [head]: value }
+          : { ...obj, [head]: setDeep((obj[head] as Record<string, unknown>) ?? {}, tail) };
+      };
+      return { ...c, [section]: setDeep((c[section] as Record<string, unknown>) ?? {}, rest) };
+    });
   };
 
   const handleSave = async () => {
@@ -911,9 +872,17 @@ export default function MDWorkspace({ sessionId, onSessionCreated, onStartMD }: 
   };
 
   if (!sessionId) {
+    if (showNewForm) {
+      return (
+        <div className="flex-1 flex flex-col bg-gray-950 h-full">
+          <NewSessionForm onCreated={handleSessionCreated} />
+        </div>
+      );
+    }
     return (
-      <div className="flex-1 flex flex-col bg-gray-950 h-full">
-        <NewSessionForm onCreated={handleSessionCreated} />
+      <div className="flex-1 flex flex-col items-center justify-center bg-gray-950 h-full gap-3">
+        <FlaskConical size={32} className="text-gray-700" />
+        <p className="text-sm text-gray-500">Select or create a session</p>
       </div>
     );
   }

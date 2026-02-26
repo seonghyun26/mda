@@ -1,4 +1,4 @@
-"""Specialized LangChain sub-agents for MDA.
+"""Specialized LangChain sub-agents for AMD.
 
 Available agents
 ----------------

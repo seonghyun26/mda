@@ -1,5 +1,5 @@
-const AUTH_KEY = "mda_auth";
-const USER_KEY = "mda_user";
+const AUTH_KEY = "amd_auth";
+const USER_KEY = "amd_user";
 
 export function isAuthenticated(): boolean {
   if (typeof window === "undefined") return false;

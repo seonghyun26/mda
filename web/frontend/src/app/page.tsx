@@ -9,7 +9,7 @@ import MDWorkspace from "@/components/workspace/MDWorkspace";
 import ChatWindow from "@/components/chat/ChatWindow";
 import ChatInput from "@/components/chat/ChatInput";
 
-const STORAGE_KEY = "mda-session";
+const STORAGE_KEY = "amd-session";
 
 export default function App() {
   const router = useRouter();
@@ -73,6 +73,7 @@ export default function App() {
       {/* Middle: MD Workspace */}
       <MDWorkspace
         sessionId={activeSessionId}
+        showNewForm={showNewSession}
         onSessionCreated={handleSessionCreated}
         onStartMD={handleStartMD}
       />

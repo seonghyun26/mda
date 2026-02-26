@@ -1,4 +1,4 @@
-"""Interactive CLI entry point for the MD Agent (``mda`` command)."""
+"""Interactive CLI entry point for the MD Agent (``amd`` command)."""
 
 from __future__ import annotations
 
@@ -224,7 +224,7 @@ def _run_example(name: str, work_dir: str, conf_dir: str) -> None:
     from md_agent.agent import MDAgent
 
     GlobalHydra.instance().clear()
-    with initialize_config_dir(config_dir=conf_dir, job_name="mda"):
+    with initialize_config_dir(config_dir=conf_dir, job_name="amd"):
         cfg = compose(
             config_name="config",
             overrides=ex["overrides"] + [f"run.work_dir={work_dir}"],

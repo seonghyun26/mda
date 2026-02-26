@@ -1,4 +1,4 @@
-"""Shared LangChain agent builder for MDA sub-agents."""
+"""Shared LangChain agent builder for AMD sub-agents."""
 
 from __future__ import annotations
 

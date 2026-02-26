@@ -1,4 +1,4 @@
-project: prj-mda
+project: prj-amd
 entity: null            # defaults to wandb login entity
 group: null
 tags: []
