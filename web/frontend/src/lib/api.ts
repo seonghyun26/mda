@@ -28,27 +28,27 @@ async function json<T>(res: Response): Promise<T> {
 // ── Sessions ──────────────────────────────────────────────────────────
 
 export async function createSession(
-  cfg: SessionConfig & { nickname?: string }
-): Promise<{ session_id: string; work_dir: string; nickname: string }> {
+  params: { workDir: string; nickname: string; username: string; preset: string; system?: string; gromacs?: string }
+): Promise<{ session_id: string; work_dir: string; nickname: string; seeded_files: string[] }> {
   const res = await fetch(`${BASE}/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      work_dir: cfg.workDir,
-      nickname: cfg.nickname ?? "",
-      method: cfg.method,
-      system: cfg.system,
-      gromacs: cfg.gromacs,
-      plumed_cvs: cfg.plumed_cvs,
+      work_dir: params.workDir,
+      nickname: params.nickname,
+      username: params.username,
+      preset: params.preset,
+      system: params.system ?? "",
+      gromacs: params.gromacs ?? "",
     }),
   });
   return json(res);
 }
 
-export async function listSessions(): Promise<{
+export async function listSessions(username: string): Promise<{
   sessions: { session_id: string; work_dir: string; nickname: string }[];
 }> {
-  return json(await fetch(`${BASE}/sessions`));
+  return json(await fetch(`${BASE}/sessions?username=${encodeURIComponent(username)}`));
 }
 
 export async function updateNickname(
@@ -81,6 +81,15 @@ export async function updateSessionConfig(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ updates }),
+  });
+  return json(res);
+}
+
+export async function generateSessionFiles(
+  sessionId: string
+): Promise<{ generated: string[]; work_dir: string }> {
+  const res = await fetch(`${BASE}/sessions/${sessionId}/generate-files`, {
+    method: "POST",
   });
   return json(res);
 }

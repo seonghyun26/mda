@@ -117,7 +117,7 @@ case "$HOOK_EVENT" in
             "type": "section",
             "text": {
               "type": "mrkdwn",
-              "text": ($mention + ", I need your input.")
+              "text": ("Done. I need your input.")
             }
           },
           {

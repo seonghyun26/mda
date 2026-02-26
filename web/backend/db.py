@@ -27,6 +27,7 @@ _ITERATIONS = 260_000
 _DEFAULT_USERS: list[tuple[str, str]] = [
     ("admin", "amd123"),
     ("hyun", "1126"),
+    ("debug", "1234"),
 ]
 
 # ── Hashing ───────────────────────────────────────────────────────────

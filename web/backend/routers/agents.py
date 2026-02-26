@@ -62,8 +62,14 @@ async def run_agent(session_id: str, agent_type: str, input: str = ""):
                 async for ev in agent.astream(input or "Read the structure and suggest appropriate CVs for metadynamics."):
                     yield _fmt(ev)
 
+        except (ImportError, AttributeError):
+            yield _fmt({"type": "error", "message": "Specialist agents are unavailable — the ANTHROPIC_API_KEY is not configured or the LangChain dependencies are not installed correctly."})
+            yield _fmt({"type": "agent_done", "final_text": ""})
         except Exception as exc:
-            yield _fmt({"type": "error", "message": str(exc)})
+            msg = str(exc)
+            if "api_key" in msg.lower() or "authentication" in msg.lower() or "unauthorized" in msg.lower():
+                msg = "Authentication failed — check that ANTHROPIC_API_KEY is set correctly."
+            yield _fmt({"type": "error", "message": msg})
             yield _fmt({"type": "agent_done", "final_text": ""})
 
     return StreamingResponse(

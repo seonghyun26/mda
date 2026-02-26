@@ -1,0 +1,5 @@
+_target_name: plain_md
+
+# Standard (unbiased) molecular dynamics — no PLUMED enhanced sampling
+nsteps: 500000        # 1 ns at dt=0.002 ps; override as needed
+temperature: ${gromacs.temperature}

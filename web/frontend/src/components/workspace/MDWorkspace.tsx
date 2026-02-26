@@ -22,8 +22,10 @@ import {
   MessageSquare,
   Bot,
 } from "lucide-react";
+
 import AgentModal from "@/components/agents/AgentModal";
 import type { AgentType } from "@/lib/agentStream";
+import { getUsername } from "@/lib/auth";
 import SimulationStatus from "@/components/status/SimulationStatus";
 import EnergyPlot from "@/components/viz/EnergyPlot";
 import ColvarPlot from "@/components/viz/ColvarPlot";
@@ -33,33 +35,63 @@ import MoleculeViewer from "@/components/viz/MoleculeViewer";
 import {
   getSessionConfig,
   updateSessionConfig,
+  generateSessionFiles,
   listFiles,
   downloadUrl,
-  getConfigOptions,
+  getFileContent,
   createSession,
+  updateNickname,
 } from "@/lib/api";
-import type { ConfigOptions } from "@/lib/types";
 import { useSessionStore } from "@/store/sessionStore";
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
-function formatDateTime(): string {
+function defaultNickname(): string {
   const now = new Date();
-  return now.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
+  const MM = String(now.getMonth() + 1).padStart(2, "0");
+  const DD = String(now.getDate()).padStart(2, "0");
+  const HH = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  const SS = String(now.getSeconds()).padStart(2, "0");
+  return `${MM}${DD}-${HH}${mm}${SS}`;
 }
 
-function defaultWorkDir(): string {
-  const now = new Date();
-  const d = now.toISOString().slice(0, 10);
-  const t = now.toTimeString().slice(0, 8).replace(/:/g, "-");
-  return `outputs/${d}_${t}`;
+// ── Presets ───────────────────────────────────────────────────────────
+
+interface Preset {
+  id: string;
+  label: string;
+  description: string;
+  tag: string;
 }
+
+const PRESETS: Preset[] = [
+  { id: "md",        label: "Molecular Dynamics",  description: "Unbiased MD — no enhanced sampling", tag: "MD" },
+  { id: "metad",     label: "Metadynamics",         description: "Well-tempered metadynamics with PLUMED", tag: "MetaD" },
+  { id: "umbrella",  label: "Umbrella Sampling",    description: "Umbrella sampling along a reaction coordinate", tag: "US" },
+  { id: "undefined", label: "Undefined",            description: "Blank — configure everything with the assistant", tag: "" },
+];
+
+// ── System options ─────────────────────────────────────────────────────
+
+interface SystemOption { id: string; label: string; description: string }
+
+const SYSTEMS: SystemOption[] = [
+  { id: "protein",       label: "Protein",          description: "Solvated protein · TIP3P · dodecahedron box" },
+  { id: "membrane",      label: "Membrane",          description: "Lipid bilayer system · CHARMM36 · triclinic box" },
+  { id: "ala_dipeptide", label: "Alanine Dipeptide", description: "Alanine dipeptide · vacuum · CHARMM36m" },
+];
+
+// ── GROMACS templates ──────────────────────────────────────────────────
+
+interface GmxTemplate { id: string; label: string; description: string }
+
+const GMX_TEMPLATES: GmxTemplate[] = [
+  { id: "default",    label: "Default",           description: "Standard production MD · explicit water · PME" },
+  { id: "nvt",        label: "NVT",               description: "Canonical ensemble · constant volume · 100 ps" },
+  { id: "npt",        label: "NPT",               description: "Isobaric ensemble · Parrinello–Rahman barostat" },
+  { id: "ala_vacuum", label: "Vacuum (Ala-dip.)", description: "Dodecahedron vacuum box · no solvent · fast" },
+];
 
 // ── UI primitives ─────────────────────────────────────────────────────
 
@@ -161,10 +193,9 @@ function SaveButton({ onSave, saved }: { onSave: () => void; saved: boolean }) {
 
 const TABS = [
   { value: "progress", label: "Progress", icon: <Activity size={12} /> },
-  { value: "system", label: "System", icon: <FlaskConical size={12} /> },
-  { value: "gromacs", label: "GROMACS", icon: <Cpu size={12} /> },
-  { value: "method", label: "Method", icon: <Zap size={12} /> },
-  { value: "plumed", label: "PLUMED", icon: <Settings size={12} /> },
+  { value: "system",   label: "System",   icon: <FlaskConical size={12} /> },
+  { value: "gromacs",  label: "GROMACS",  icon: <Cpu size={12} /> },
+  { value: "method",   label: "Method",   icon: <Zap size={12} /> },
 ];
 
 function PillTabs({
@@ -198,10 +229,54 @@ function PillTabs({
 
 function ProgressTab({ sessionId }: { sessionId: string }) {
   const [agentOpen, setAgentOpen] = useState(false);
+  const { sessions, updateSessionNickname } = useSessionStore();
+  const session = sessions.find((s) => s.session_id === sessionId);
+  const [nickDraft, setNickDraft] = useState(session?.nickname ?? "");
+  const [nickSaved, setNickSaved] = useState(false);
+
+  // Keep draft in sync when session list loads
+  useEffect(() => {
+    if (session?.nickname) setNickDraft(session.nickname);
+  }, [session?.nickname]);
+
+  const saveNickname = async () => {
+    const trimmed = nickDraft.trim();
+    if (!trimmed || trimmed === session?.nickname) return;
+    try {
+      await updateNickname(sessionId, trimmed);
+      updateSessionNickname(sessionId, trimmed);
+      setNickSaved(true);
+      setTimeout(() => setNickSaved(false), 2000);
+    } catch { /* ignore */ }
+  };
 
   return (
     <div className="p-4 space-y-4">
-      {/* Agent button */}
+      {/* Editable session name */}
+      <div className="rounded-xl border border-gray-700/60 bg-gray-900/60 p-3">
+        <label className="block text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-2">Session Name</label>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={nickDraft}
+            onChange={(e) => { setNickDraft(e.target.value); setNickSaved(false); }}
+            onKeyDown={(e) => { if (e.key === "Enter") saveNickname(); }}
+            className="flex-1 border border-gray-700 rounded-lg px-3 py-1.5 bg-gray-800 text-gray-100 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <button
+            onClick={saveNickname}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1 transition-all flex-shrink-0 ${
+              nickSaved
+                ? "bg-emerald-700/30 text-emerald-400 border border-emerald-700/50"
+                : "bg-blue-600 hover:bg-blue-700 text-white"
+            }`}
+          >
+            {nickSaved ? <><CheckCircle2 size={11} /> Saved</> : "Save"}
+          </button>
+        </div>
+      </div>
+
+      {/* Status + agent button */}
       <div className="flex items-center justify-between">
         <span className="text-xs font-semibold text-gray-400">Simulation Status</span>
         <button
@@ -218,7 +293,7 @@ function ProgressTab({ sessionId }: { sessionId: string }) {
       <div className="space-y-4 pt-2">
         <div className="flex items-center gap-2">
           <div className="h-px flex-1 bg-gray-800" />
-          <span className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider">Analysis</span>
+          <span className="text-[10px] font-semibold text-gray-600 uppercase tracking-wider">Results</span>
           <div className="h-px flex-1 bg-gray-800" />
         </div>
         <EnergyPlot sessionId={sessionId} />
@@ -392,6 +467,7 @@ function GromacsTab({
   saved: boolean;
 }) {
   const gromacs = (cfg.gromacs ?? {}) as Record<string, unknown>;
+  const method  = (cfg.method  ?? {}) as Record<string, unknown>;
 
   return (
     <div className="p-4 space-y-4">
@@ -400,27 +476,36 @@ function GromacsTab({
         <SaveButton onSave={onSave} saved={saved} />
       </div>
 
-      {/* Time integration */}
-      <Section icon={<Timer size={13} />} title="Time Integration" accent="blue">
-        <Field
-          label="Timestep"
-          type="number"
-          value={String(gromacs.dt ?? "0.002")}
-          onChange={(v) => onChange("gromacs.dt", Number(v))}
-          unit="ps"
-          hint="Leapfrog integrator step size. 2 fs is standard for most systems."
-        />
+      {/* Simulation length */}
+      <Section icon={<Binary size={13} />} title="Simulation Length" accent="blue">
+        <FieldGrid>
+          <Field
+            label="Steps"
+            type="number"
+            value={String(method.nsteps ?? "")}
+            onChange={(v) => onChange("method.nsteps", Number(v))}
+            hint="Total MD steps to run."
+          />
+          <Field
+            label="Timestep"
+            type="number"
+            value={String(gromacs.dt ?? "0.002")}
+            onChange={(v) => onChange("gromacs.dt", Number(v))}
+            unit="ps"
+            hint="2 fs is standard."
+          />
+        </FieldGrid>
       </Section>
 
       {/* Thermostat */}
-      <Section icon={<Thermometer size={13} />} title="Thermostat" accent="amber">
+      <Section icon={<Thermometer size={13} />} title="Temperature" accent="amber">
         <Field
           label="Reference Temperature"
           type="number"
-          value={String(gromacs.ref_t ?? "300")}
+          value={String(gromacs.ref_t ?? gromacs.temperature ?? "300")}
           onChange={(v) => onChange("gromacs.ref_t", Number(v))}
           unit="K"
-          hint="Target temperature for Berendsen / V-rescale thermostat."
+          hint="Target temperature for V-rescale thermostat."
         />
       </Section>
 
@@ -448,117 +533,164 @@ function GromacsTab({
   );
 }
 
-// ── Method tab ─────────────────────────────────────────────────────────
+// ── Method tab (includes PLUMED) ────────────────────────────────────────
+
+const METHOD_OPTIONS = [
+  { id: "md",        label: "Molecular Dynamics",  tag: "MD" },
+  { id: "metad",     label: "Metadynamics",         tag: "MetaD" },
+  { id: "umbrella",  label: "Umbrella Sampling",    tag: "US" },
+  { id: "undefined", label: "Undefined",            tag: "" },
+];
 
 function MethodTab({
+  sessionId,
   cfg,
   onChange,
   onSave,
   saved,
 }: {
+  sessionId: string;
   cfg: Record<string, unknown>;
   onChange: (k: string, v: unknown) => void;
   onSave: () => void;
   saved: boolean;
 }) {
   const method = (cfg.method ?? {}) as Record<string, unknown>;
-  const gromacs = (cfg.gromacs ?? {}) as Record<string, unknown>;
+  const hills = (method.hills ?? {}) as Record<string, unknown>;
+  const [agentOpen, setAgentOpen] = useState(false);
+  const [methodOpen, setMethodOpen] = useState(false);
+
+  const currentMethodId = (method._target_name as string) ?? "undefined";
+  const currentMethod = METHOD_OPTIONS.find((m) => m.id === currentMethodId) ?? METHOD_OPTIONS[3];
+  const isMetaD = currentMethodId === "metad" || currentMethodId === "metadynamics";
+
+  const handleMethodChange = (id: string) => {
+    onChange("method._target_name", id);
+    setMethodOpen(false);
+  };
 
   return (
     <div className="p-4 space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-gray-200">Sampling Method</h3>
+        <h3 className="text-sm font-semibold text-gray-200">Simulation Method</h3>
         <SaveButton onSave={onSave} saved={saved} />
       </div>
 
-      {/* Simulation length */}
-      <Section icon={<Binary size={13} />} title="Simulation Length" accent="blue">
-        <FieldGrid>
-          <Field
-            label="Steps"
-            type="number"
-            value={String(method.nsteps ?? "")}
-            onChange={(v) => onChange("method.nsteps", Number(v))}
-            hint="Total MD steps to run."
-          />
-          <Field
-            label="Temperature"
-            type="number"
-            value={String(method.temperature ?? gromacs.ref_t ?? "300")}
-            onChange={(v) => onChange("method.temperature", Number(v))}
-            unit="K"
-          />
-        </FieldGrid>
-      </Section>
+      {/* Current method + toggle */}
+      <div className="rounded-xl border border-gray-700/60 bg-gray-900/60 overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-2">
+            <Zap size={14} className="text-indigo-400" />
+            <span className="text-sm font-medium text-gray-100">{currentMethod.label}</span>
+            {currentMethod.tag && (
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-indigo-800/50 text-indigo-300">
+                {currentMethod.tag}
+              </span>
+            )}
+          </div>
+          <button
+            onClick={() => setMethodOpen((o) => !o)}
+            className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+          >
+            {methodOpen ? "Cancel" : "Change"}
+          </button>
+        </div>
 
-      {/* Metadynamics bias */}
-      <Section icon={<Mountain size={13} />} title="Metadynamics Bias" accent="indigo">
-        <FieldGrid>
-          <Field
-            label="Hills height"
-            type="number"
-            value={String(method.hills_height ?? "")}
-            onChange={(v) => onChange("method.hills_height", Number(v))}
-            unit="kJ/mol"
-            hint="Gaussian bias height."
-          />
-          <Field
-            label="Hills pace"
-            type="number"
-            value={String(method.hills_pace ?? "")}
-            onChange={(v) => onChange("method.hills_pace", Number(v))}
-            unit="steps"
-            hint="Deposition frequency."
-          />
-        </FieldGrid>
-      </Section>
-    </div>
-  );
-}
-
-// ── PLUMED tab ─────────────────────────────────────────────────────────
-
-function PlumedTab({ sessionId }: { sessionId: string }) {
-  const [agentOpen, setAgentOpen] = useState(false);
-
-  return (
-    <div className="p-4 space-y-4">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-gray-200">PLUMED / Collective Variables</h3>
-        <button
-          onClick={() => setAgentOpen(true)}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs bg-indigo-900/30 border border-indigo-800/50 text-indigo-400 hover:bg-indigo-800/40 transition-colors font-medium"
-        >
-          <Bot size={11} />
-          Suggest CVs
-        </button>
+        {methodOpen && (
+          <div className="border-t border-gray-800 p-3 space-y-1.5 bg-gray-950/40">
+            {METHOD_OPTIONS.map((m) => (
+              <button
+                key={m.id}
+                onClick={() => handleMethodChange(m.id)}
+                className={`w-full text-left px-3 py-2 rounded-lg border text-sm transition-all ${
+                  m.id === currentMethodId
+                    ? "border-indigo-600 bg-indigo-950/40 text-white"
+                    : "border-gray-700/60 bg-gray-800/40 text-gray-400 hover:border-gray-600 hover:text-gray-200"
+                }`}
+              >
+                <span className="font-medium">{m.label}</span>
+                {m.tag && (
+                  <span className={`ml-2 text-[10px] font-mono px-1 py-0.5 rounded ${
+                    m.id === currentMethodId ? "bg-indigo-700/60 text-indigo-200" : "bg-gray-700 text-gray-500"
+                  }`}>{m.tag}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      <Section icon={<Layers size={13} />} title="About PLUMED CVs" accent="indigo">
-        <p className="text-xs text-gray-400 leading-relaxed">
-          PLUMED parameters are set dynamically by the AI assistant based on your simulation
-          description. The agent generates the PLUMED <code className="text-indigo-400 bg-gray-800 px-1 rounded">.dat</code> file
-          from Jinja2 templates in <code className="text-indigo-400 bg-gray-800 px-1 rounded">templates/plumed/</code>.
-        </p>
-      </Section>
-
-      <Section icon={<MessageSquare size={13} />} title="Example Instructions" accent="blue">
-        <div className="space-y-2">
-          {[
-            "Set up phi/psi dihedrals for alanine dipeptide",
-            "Use hills height 0.5 kJ/mol, sigma 0.3 rad",
-            "Add an upper wall at phi = 2.0 rad",
-            "Restart metadynamics from an existing HILLS file",
-          ].map((ex) => (
-            <div
-              key={ex}
-              className="px-3 py-2 rounded-lg bg-gray-800/60 border border-gray-700/50 text-xs text-gray-400 font-mono"
+      {/* Metadynamics / PLUMED bias — only shown when method is metad */}
+      {isMetaD && (
+        <Section icon={<Mountain size={13} />} title="PLUMED / Metadynamics Bias" accent="indigo">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-[11px] text-gray-500">Well-tempered metadynamics parameters</p>
+            <button
+              onClick={() => setAgentOpen(true)}
+              className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] bg-indigo-900/30 border border-indigo-800/50 text-indigo-400 hover:bg-indigo-800/40 transition-colors"
             >
-              &ldquo;{ex}&rdquo;
+              <Bot size={10} />
+              Suggest CVs
+            </button>
+          </div>
+          <FieldGrid>
+            <Field
+              label="Hills height"
+              type="number"
+              value={String(hills.height ?? "")}
+              onChange={(v) => onChange("method.hills.height", Number(v))}
+              unit="kJ/mol"
+              hint="Gaussian bias height."
+            />
+            <Field
+              label="Hills pace"
+              type="number"
+              value={String(hills.pace ?? "")}
+              onChange={(v) => onChange("method.hills.pace", Number(v))}
+              unit="steps"
+              hint="Deposition frequency."
+            />
+          </FieldGrid>
+          <FieldGrid>
+            <Field
+              label="Sigma"
+              type="number"
+              value={String(Array.isArray(hills.sigma) ? hills.sigma[0] : hills.sigma ?? "")}
+              onChange={(v) => onChange("method.hills.sigma", [Number(v)])}
+              hint="Gaussian width (CV units)."
+            />
+            <Field
+              label="Bias factor γ"
+              type="number"
+              value={String(hills.biasfactor ?? "")}
+              onChange={(v) => onChange("method.hills.biasfactor", Number(v))}
+              hint="Well-tempered factor (5–15)."
+            />
+          </FieldGrid>
+          <Section icon={<MessageSquare size={11} />} title="Example CV instructions" accent="blue">
+            <div className="space-y-1.5">
+              {[
+                "Set up phi/psi dihedrals for alanine dipeptide",
+                "Use sigma 0.3 rad, height 0.5 kJ/mol",
+                "Add an upper wall at phi = 2.0 rad",
+              ].map((ex) => (
+                <div key={ex} className="px-2.5 py-1.5 rounded-lg bg-gray-800/60 border border-gray-700/50 text-[10px] text-gray-400 font-mono">
+                  &ldquo;{ex}&rdquo;
+                </div>
+              ))}
             </div>
-          ))}
+          </Section>
+        </Section>
+      )}
+
+      {/* Placeholder for non-metaD methods */}
+      {!isMetaD && (
+        <div className="rounded-xl border border-gray-700/40 bg-gray-900/30 p-4 text-center">
+          <p className="text-xs text-gray-600">
+            No additional parameters for <span className="text-gray-400">{currentMethod.label}</span>.
+          </p>
         </div>
-      </Section>
+      )}
 
       {agentOpen && (
         <AgentModal sessionId={sessionId} agentType="cv" onClose={() => setAgentOpen(false)} />
@@ -569,156 +701,137 @@ function PlumedTab({ sessionId }: { sessionId: string }) {
 
 // ── New session form ───────────────────────────────────────────────────
 
-function NewSessionForm({ onCreated }: { onCreated: (id: string, workDir: string, nickname: string) => void }) {
-  const [options, setOptions] = useState<ConfigOptions>({
-    methods: ["metadynamics"],
-    systems: ["protein"],
-    gromacs: ["default"],
-    plumed_cvs: ["default"],
-  });
-  const [form, setForm] = useState({
-    method: "metadynamics",
-    system: "protein",
-    gromacs: "default",
-    plumed_cvs: "default",
-    workDir: defaultWorkDir(),
-    nickname: formatDateTime(),
-  });
+function NewSessionForm({
+  onCreated,
+}: {
+  onCreated: (id: string, workDir: string, nickname: string, seededFiles: string[]) => void;
+}) {
+  const [nickname, setNickname] = useState(defaultNickname);
+  const [preset, setPreset] = useState("md");
+  const [system, setSystem] = useState("protein");
+  const [gromacs, setGromacs] = useState("default");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-
-  useEffect(() => {
-    getConfigOptions()
-      .then((opts) => {
-        setOptions(opts);
-        setForm((f) => ({
-          ...f,
-          method: opts.methods[0] ?? f.method,
-          system: opts.systems[0] ?? f.system,
-          gromacs: opts.gromacs[0] ?? f.gromacs,
-          plumed_cvs: opts.plumed_cvs[0] ?? f.plumed_cvs,
-        }));
-      })
-      .catch(() => {});
-  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError("");
+    const nick = nickname.trim() || defaultNickname();
+    const user = getUsername() || "default";
+    const workDir = `outputs/${user}/${nick}`;
     try {
-      const { session_id, work_dir, nickname } = await createSession({
-        method: form.method,
-        system: form.system,
-        gromacs: form.gromacs,
-        plumed_cvs: form.plumed_cvs,
-        workDir: form.workDir,
-        nickname: form.nickname,
+      const { session_id, work_dir, nickname: savedNick, seeded_files } = await createSession({
+        workDir,
+        nickname: nick,
+        username: user,
+        preset,
+        system,
+        gromacs,
       });
-      onCreated(session_id, work_dir, nickname);
+      onCreated(session_id, work_dir, savedNick, seeded_files ?? []);
     } catch (err) {
       setError(String(err));
       setLoading(false);
     }
   };
 
-  const Select = ({
-    label,
-    value,
-    opts,
-    onChange,
-    hint,
-  }: {
-    label: string;
-    value: string;
-    opts: string[];
-    onChange: (v: string) => void;
-    hint?: string;
-  }) => (
-    <div>
-      <label className="block text-xs font-medium text-gray-400 mb-1">{label}</label>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full border border-gray-700 rounded-lg px-3 py-2 bg-gray-800 text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-      >
-        {opts.map((o) => (
-          <option key={o} value={o}>{o}</option>
-        ))}
-      </select>
-      {hint && <p className="mt-1 text-[11px] text-gray-600">{hint}</p>}
-    </div>
-  );
-
   return (
-    <div className="flex h-full items-center justify-center p-6 overflow-y-auto">
-      <div className="w-full max-w-sm">
+    <div className="flex h-full items-start justify-center p-6 overflow-y-auto">
+      <div className="w-full max-w-4xl">
         <div className="mb-6 text-center">
           <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 mb-3 shadow-lg">
             <FlaskConical size={22} className="text-white" />
           </div>
-          <h2 className="text-xl font-bold text-gray-100">New Simulation</h2>
-          <p className="text-sm text-gray-500 mt-1">Configure your MD session</p>
+          <h2 className="text-xl font-bold text-gray-100">New Session</h2>
+          <p className="text-sm text-gray-500 mt-1">saved to <code className="font-mono text-gray-600">outputs/{getUsername() || "default"}/{nickname || "…"}</code></p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Session identity */}
-          <div className="rounded-xl border border-gray-700/60 bg-gray-900/60 p-4 space-y-3">
-            <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Session</p>
-            <div>
-              <label className="block text-xs font-medium text-gray-400 mb-1">
-                Name <span className="text-gray-600">(editable anytime)</span>
-              </label>
-              <input
-                type="text"
-                value={form.nickname}
-                onChange={(e) => setForm({ ...form, nickname: e.target.value })}
-                className="w-full border border-gray-700 rounded-lg px-3 py-2 bg-gray-800 text-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-400 mb-1">Output directory</label>
-              <input
-                type="text"
-                value={form.workDir}
-                onChange={(e) => setForm({ ...form, workDir: e.target.value })}
-                className="w-full border border-gray-700 rounded-lg px-3 py-2 bg-gray-800 text-gray-100 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-          </div>
-
-          {/* Method + System */}
-          <div className="rounded-xl border border-gray-700/60 bg-gray-900/60 p-4 space-y-3">
-            <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Simulation</p>
-            <Select
-              label="Sampling Method"
-              value={form.method}
-              opts={options.methods}
-              onChange={(v) => setForm({ ...form, method: v })}
-            />
-            <Select
-              label="System"
-              value={form.system}
-              opts={options.systems}
-              onChange={(v) => setForm({ ...form, system: v })}
+          {/* Nickname */}
+          <div className="rounded-xl border border-gray-700/60 bg-gray-900/60 p-4">
+            <label className="block text-xs font-medium text-gray-400 mb-1.5">
+              Session name <span className="text-gray-600">(editable anytime)</span>
+            </label>
+            <input
+              type="text"
+              value={nickname}
+              onChange={(e) => setNickname(e.target.value)}
+              placeholder={defaultNickname()}
+              className="w-full border border-gray-700 rounded-lg px-3 py-2 bg-gray-800 text-gray-100 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
 
-          {/* GROMACS + PLUMED presets */}
-          <div className="rounded-xl border border-gray-700/60 bg-gray-900/60 p-4 space-y-3">
-            <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Presets</p>
-            <Select
-              label="GROMACS Preset"
-              value={form.gromacs}
-              opts={options.gromacs}
-              onChange={(v) => setForm({ ...form, gromacs: v })}
-            />
-            <Select
-              label="Collective Variables"
-              value={form.plumed_cvs}
-              opts={options.plumed_cvs}
-              onChange={(v) => setForm({ ...form, plumed_cvs: v })}
-            />
+          {/* Three selectors side by side */}
+          <div className="grid grid-cols-3 gap-3">
+
+            {/* Simulation method */}
+            <div className="rounded-xl border border-gray-700/60 bg-gray-900/60 p-3 flex flex-col gap-1.5">
+              <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Simulation Method</p>
+              {PRESETS.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setPreset(p.id)}
+                  className={`w-full text-left px-2.5 py-2 rounded-lg border transition-all ${
+                    preset === p.id
+                      ? "border-blue-600 bg-blue-950/40 text-white"
+                      : "border-gray-700/60 bg-gray-800/40 text-gray-400 hover:border-gray-600 hover:text-gray-200"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-xs font-medium leading-snug">{p.label}</span>
+                    {p.tag && (
+                      <span className={`text-[9px] font-mono px-1 py-0.5 rounded flex-shrink-0 ${
+                        preset === p.id ? "bg-blue-700/60 text-blue-200" : "bg-gray-700 text-gray-500"
+                      }`}>{p.tag}</span>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-gray-600 mt-0.5 leading-snug">{p.description}</p>
+                </button>
+              ))}
+            </div>
+
+            {/* GROMACS template */}
+            <div className="rounded-xl border border-gray-700/60 bg-gray-900/60 p-3 flex flex-col gap-1.5">
+              <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">GROMACS Template</p>
+              {GMX_TEMPLATES.map((g) => (
+                <button
+                  key={g.id}
+                  type="button"
+                  onClick={() => setGromacs(g.id)}
+                  className={`w-full text-left px-2.5 py-2 rounded-lg border transition-all ${
+                    gromacs === g.id
+                      ? "border-emerald-600 bg-emerald-950/40 text-white"
+                      : "border-gray-700/60 bg-gray-800/40 text-gray-400 hover:border-gray-600 hover:text-gray-200"
+                  }`}
+                >
+                  <span className="text-xs font-medium">{g.label}</span>
+                  <p className="text-[10px] text-gray-600 mt-0.5 leading-snug">{g.description}</p>
+                </button>
+              ))}
+            </div>
+
+            {/* Molecule system */}
+            <div className="rounded-xl border border-gray-700/60 bg-gray-900/60 p-3 flex flex-col gap-1.5">
+              <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Molecule System</p>
+              {SYSTEMS.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => setSystem(s.id)}
+                  className={`w-full text-left px-2.5 py-2 rounded-lg border transition-all ${
+                    system === s.id
+                      ? "border-indigo-600 bg-indigo-950/40 text-white"
+                      : "border-gray-700/60 bg-gray-800/40 text-gray-400 hover:border-gray-600 hover:text-gray-200"
+                  }`}
+                >
+                  <span className="text-xs font-medium">{s.label}</span>
+                  <p className="text-[10px] text-gray-600 mt-0.5 leading-snug">{s.description}</p>
+                </button>
+              ))}
+            </div>
+
           </div>
 
           {error && (
@@ -732,7 +845,7 @@ function NewSessionForm({ onCreated }: { onCreated: (id: string, workDir: string
             disabled={loading}
             className="w-full py-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 text-white font-semibold rounded-xl transition-all text-sm shadow-lg shadow-blue-900/30"
           >
-            {loading ? "Creating session…" : "Create Session"}
+            {loading ? "Creating…" : "Create Session"}
           </button>
         </form>
       </div>
@@ -752,6 +865,7 @@ export default function MDWorkspace({ sessionId, onSessionCreated, onStartMD }: 
   const [cfg, setCfg] = useState<Record<string, unknown>>({});
   const [saved, setSaved] = useState(false);
   const [activeTab, setActiveTab] = useState("progress");
+  const [autoViewer, setAutoViewer] = useState<{ content: string; name: string } | null>(null);
   const { setSession } = useSessionStore();
 
   useEffect(() => {
@@ -770,13 +884,30 @@ export default function MDWorkspace({ sessionId, onSessionCreated, onStartMD }: 
   const handleSave = async () => {
     if (!sessionId) return;
     await updateSessionConfig(sessionId, cfg).catch(() => {});
+    await generateSessionFiles(sessionId).catch(() => {});
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
 
-  const handleSessionCreated = (id: string, workDir: string, nickname: string) => {
+  const handleSessionCreated = async (
+    id: string,
+    workDir: string,
+    nickname: string,
+    seededFiles: string[],
+  ) => {
     setSession(id, { method: "", system: "", gromacs: "", plumed_cvs: "", workDir });
     onSessionCreated(id, workDir, nickname);
+
+    // Auto-open the first seeded structure file in the viewer
+    const structExts = new Set(["pdb", "gro", "mol2", "xyz"]);
+    const structFile = seededFiles.find((f) => structExts.has(f.split(".").pop()?.toLowerCase() ?? ""));
+    if (structFile) {
+      setActiveTab("system");
+      try {
+        const content = await getFileContent(id, `${workDir}/${structFile}`);
+        setAutoViewer({ content, name: structFile });
+      } catch { /* ignore */ }
+    }
   };
 
   if (!sessionId) {
@@ -789,10 +920,9 @@ export default function MDWorkspace({ sessionId, onSessionCreated, onStartMD }: 
 
   const tabContent: Record<string, React.ReactNode> = {
     progress: <ProgressTab sessionId={sessionId} />,
-    system: <SystemTab sessionId={sessionId} />,
-    gromacs: <GromacsTab cfg={cfg} onChange={handleChange} onSave={handleSave} saved={saved} />,
-    method: <MethodTab cfg={cfg} onChange={handleChange} onSave={handleSave} saved={saved} />,
-    plumed: <PlumedTab sessionId={sessionId} />,
+    system:   <SystemTab sessionId={sessionId} />,
+    gromacs:  <GromacsTab cfg={cfg} onChange={handleChange} onSave={handleSave} saved={saved} />,
+    method:   <MethodTab sessionId={sessionId} cfg={cfg} onChange={handleChange} onSave={handleSave} saved={saved} />,
   };
 
   return (
@@ -813,6 +943,14 @@ export default function MDWorkspace({ sessionId, onSessionCreated, onStartMD }: 
           Start MD Simulation
         </button>
       </div>
+
+      {autoViewer && (
+        <MoleculeViewer
+          fileContent={autoViewer.content}
+          fileName={autoViewer.name}
+          onClose={() => setAutoViewer(null)}
+        />
+      )}
     </div>
   );
 }

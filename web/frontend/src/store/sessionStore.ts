@@ -8,6 +8,7 @@ import type {
   ToolCallBlock,
 } from "@/lib/types";
 import { listSessions } from "@/lib/api";
+import { getUsername } from "@/lib/auth";
 
 export interface SessionSummary {
   session_id: string;
@@ -60,7 +61,7 @@ export const useSessionStore = create<SessionState>((set) => ({
 
   fetchSessions: async () => {
     try {
-      const { sessions } = await listSessions();
+      const { sessions } = await listSessions(getUsername());
       set({ sessions });
     } catch {
       // ignore

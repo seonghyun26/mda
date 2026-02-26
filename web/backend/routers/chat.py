@@ -20,38 +20,98 @@ from web.backend.analysis_utils import get_log_progress
 
 router = APIRouter()
 
+# ── Preset definitions ─────────────────────────────────────────────────
+
+_REPO_ROOT = Path(__file__).parents[2]
+
+# Maps preset id → Hydra config group selections
+PRESET_CONFIGS: dict[str, dict[str, str]] = {
+    "undefined": dict(method="metadynamics", system="protein", gromacs="default", plumed_cvs="default"),
+    "md":        dict(method="plain_md",     system="protein", gromacs="default", plumed_cvs="default"),
+    "metad":     dict(method="metadynamics", system="protein", gromacs="default", plumed_cvs="default"),
+    "umbrella":  dict(method="umbrella",     system="protein", gromacs="default", plumed_cvs="default"),
+}
+
+# Maps molecule system id → list of example files to copy into work_dir on creation
+_ALA = _REPO_ROOT / "examples" / "alanine_dipeptide"
+SYSTEM_SEED_FILES: dict[str, list[Path]] = {
+    "ala_dipeptide": [_ALA / "ala2.pdb"],
+}
+
+
+def _seed_files(work_dir: str, preset: str, system: str) -> list[str]:
+    """Copy preset/system example files into work_dir. Returns relative file paths."""
+    import shutil
+    seeded: list[str] = []
+    sources: list[Path] = list(SYSTEM_SEED_FILES.get(system, []))
+    for src in sources:
+        if src.is_file():
+            dest = Path(work_dir) / src.name
+            shutil.copy2(src, dest)
+            seeded.append(src.name)
+    return seeded
+
 
 # ── Session lifecycle ──────────────────────────────────────────────────
 
 class CreateSessionRequest(BaseModel):
     work_dir: str
     nickname: str = ""
-    method: str = "metadynamics"
-    system: str = "protein"
-    gromacs: str = "default"
-    plumed_cvs: str = "default"
+    username: str = ""
+    preset: str = "undefined"
+    # Individual overrides (ignored when preset is set)
+    method: str = ""
+    system: str = ""
+    gromacs: str = ""
+    plumed_cvs: str = ""
     extra_overrides: list[str] = []
 
 
 @router.post("/sessions")
 async def create_session_endpoint(req: CreateSessionRequest):
-    """Create a new agent session. Returns session_id."""
+    """Create a new agent session. Returns session_id + list of seeded files."""
     Path(req.work_dir).mkdir(parents=True, exist_ok=True)
+
+    # Resolve config from preset; individual fields override if provided
+    cfg_defaults = PRESET_CONFIGS.get(req.preset, PRESET_CONFIGS["undefined"])
+    method    = req.method    or cfg_defaults["method"]
+    system    = req.system    or cfg_defaults["system"]
+    gromacs   = req.gromacs   or cfg_defaults["gromacs"]
+    plumed_cvs = req.plumed_cvs or cfg_defaults["plumed_cvs"]
+
     session = create_session(
         work_dir=req.work_dir,
         nickname=req.nickname,
-        method=req.method,
-        system=req.system,
-        gromacs=req.gromacs,
-        plumed_cvs=req.plumed_cvs,
+        username=req.username,
+        method=method,
+        system=system,
+        gromacs=gromacs,
+        plumed_cvs=plumed_cvs,
         extra_overrides=req.extra_overrides,
     )
-    return {"session_id": session.session_id, "work_dir": session.work_dir, "nickname": session.nickname}
+
+    seeded = _seed_files(req.work_dir, req.preset, system)
+
+    # Write initial config.yaml to work_dir so the user can inspect/edit it
+    try:
+        from omegaconf import OmegaConf
+        cfg_path = Path(req.work_dir) / "config.yaml"
+        OmegaConf.save(session.agent.cfg, cfg_path)
+        seeded.append("config.yaml")
+    except Exception:
+        pass
+
+    return {
+        "session_id": session.session_id,
+        "work_dir": session.work_dir,
+        "nickname": session.nickname,
+        "seeded_files": seeded,
+    }
 
 
 @router.get("/sessions")
-async def list_sessions_endpoint():
-    return {"sessions": list_sessions()}
+async def list_sessions_endpoint(username: str = ""):
+    return {"sessions": list_sessions(username=username)}
 
 
 class NicknameRequest(BaseModel):
@@ -60,10 +120,20 @@ class NicknameRequest(BaseModel):
 
 @router.patch("/sessions/{session_id}/nickname")
 async def update_nickname(session_id: str, req: NicknameRequest):
+    import json
     session = get_session(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
     session.nickname = req.nickname.strip()
+    # Persist nickname in work_dir/session.json
+    meta_path = Path(session.work_dir) / "session.json"
+    try:
+        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        meta.update({"session_id": session_id, "nickname": session.nickname, "work_dir": session.work_dir})
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        meta_path.write_text(json.dumps(meta, indent=2))
+    except Exception:
+        pass
     return {"session_id": session_id, "nickname": session.nickname}
 
 
