@@ -7,6 +7,13 @@ import type {
   SSEEvent,
   ToolCallBlock,
 } from "@/lib/types";
+import { listSessions } from "@/lib/api";
+
+export interface SessionSummary {
+  session_id: string;
+  work_dir: string;
+  nickname: string;
+}
 
 interface SessionState {
   sessionId: string | null;
@@ -14,9 +21,14 @@ interface SessionState {
   messages: ChatMessage[];
   simProgress: SimProgress | null;
   isStreaming: boolean;
+  sessions: SessionSummary[];
 
   // Actions
   setSession: (id: string, config: SessionConfig) => void;
+  switchSession: (id: string, workDir: string) => void;
+  fetchSessions: () => Promise<void>;
+  addSession: (s: SessionSummary) => void;
+  updateSessionNickname: (sessionId: string, nickname: string) => void;
   addUserMessage: (text: string) => void;
   appendSSEEvent: (event: SSEEvent) => void;
   updateProgress: (progress: SimProgress) => void;
@@ -38,9 +50,34 @@ export const useSessionStore = create<SessionState>((set) => ({
   messages: [],
   simProgress: null,
   isStreaming: false,
+  sessions: [],
 
   setSession: (id, config) =>
     set({ sessionId: id, config, messages: [], simProgress: null }),
+
+  switchSession: (id, workDir) =>
+    set({ sessionId: id, config: { method: "", system: "", gromacs: "", plumed_cvs: "", workDir }, messages: [], simProgress: null }),
+
+  fetchSessions: async () => {
+    try {
+      const { sessions } = await listSessions();
+      set({ sessions });
+    } catch {
+      // ignore
+    }
+  },
+
+  addSession: (s) =>
+    set((state) => ({
+      sessions: [s, ...state.sessions.filter((x) => x.session_id !== s.session_id)],
+    })),
+
+  updateSessionNickname: (sessionId, nickname) =>
+    set((state) => ({
+      sessions: state.sessions.map((s) =>
+        s.session_id === sessionId ? { ...s, nickname } : s
+      ),
+    })),
 
   addUserMessage: (text) =>
     set((state) => ({
@@ -60,7 +97,6 @@ export const useSessionStore = create<SessionState>((set) => ({
     set((state) => {
       const messages = [...state.messages];
 
-      // Ensure there is an assistant message at the end
       const ensureAssistant = (): ChatMessage => {
         const last = messages[messages.length - 1];
         if (last && last.role === "assistant") return last;
@@ -113,7 +149,6 @@ export const useSessionStore = create<SessionState>((set) => ({
         }
 
         case "tool_result": {
-          // Find the pending tool block by id across all messages and update it
           const updated: ChatMessage[] = messages.map((m) => ({
             ...m,
             blocks: m.blocks.map((b): MessageBlock => {
@@ -140,8 +175,15 @@ export const useSessionStore = create<SessionState>((set) => ({
         case "agent_done":
           return { isStreaming: false };
 
-        case "error":
-          return { isStreaming: false };
+        case "error": {
+          const msg = ensureAssistant();
+          const idx = messages.indexOf(msg);
+          messages[idx] = {
+            ...msg,
+            blocks: [...msg.blocks, { kind: "error" as const, content: event.message }],
+          };
+          return { messages, isStreaming: false };
+        }
 
         default:
           return {};

@@ -1,5 +1,20 @@
 import type { ConfigOptions, SessionConfig } from "./types";
 
+// ── Auth ──────────────────────────────────────────────────────────────
+
+export async function loginUser(
+  username: string,
+  password: string
+): Promise<{ success: boolean; username?: string }> {
+  const res = await fetch(`${BASE}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!res.ok) return { success: false };
+  return { success: true, ...(await res.json()) };
+}
+
 const BASE = "/api";
 
 async function json<T>(res: Response): Promise<T> {
@@ -12,12 +27,15 @@ async function json<T>(res: Response): Promise<T> {
 
 // ── Sessions ──────────────────────────────────────────────────────────
 
-export async function createSession(cfg: SessionConfig): Promise<{ session_id: string; work_dir: string }> {
+export async function createSession(
+  cfg: SessionConfig & { nickname?: string }
+): Promise<{ session_id: string; work_dir: string; nickname: string }> {
   const res = await fetch(`${BASE}/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       work_dir: cfg.workDir,
+      nickname: cfg.nickname ?? "",
       method: cfg.method,
       system: cfg.system,
       gromacs: cfg.gromacs,
@@ -27,8 +45,22 @@ export async function createSession(cfg: SessionConfig): Promise<{ session_id: s
   return json(res);
 }
 
-export async function listSessions(): Promise<{ sessions: { session_id: string; work_dir: string }[] }> {
+export async function listSessions(): Promise<{
+  sessions: { session_id: string; work_dir: string; nickname: string }[];
+}> {
   return json(await fetch(`${BASE}/sessions`));
+}
+
+export async function updateNickname(
+  sessionId: string,
+  nickname: string
+): Promise<{ session_id: string; nickname: string }> {
+  const res = await fetch(`${BASE}/sessions/${sessionId}/nickname`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nickname }),
+  });
+  return json(res);
 }
 
 // ── Config ────────────────────────────────────────────────────────────
@@ -77,6 +109,12 @@ export async function uploadFile(
 
 export function downloadUrl(sessionId: string, path: string): string {
   return `${BASE}/sessions/${sessionId}/files/download?path=${encodeURIComponent(path)}`;
+}
+
+export async function getFileContent(sessionId: string, path: string): Promise<string> {
+  const res = await fetch(downloadUrl(sessionId, path));
+  if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
+  return res.text();
 }
 
 // ── Analysis ──────────────────────────────────────────────────────────

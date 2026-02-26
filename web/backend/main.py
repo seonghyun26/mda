@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+
+if not os.environ.get("ANTHROPIC_API_KEY"):
+    import warnings
+    warnings.warn("ANTHROPIC_API_KEY is not set — agent calls will fail", stacklevel=1)
 
 # Allow imports of both web.backend.* and md_agent.* when running directly
 _repo_root = str(Path(__file__).parents[2])
@@ -14,7 +19,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from web.backend.routers import analysis, chat, config, files
+from web.backend.routers import analysis, auth, chat, config, files
 
 app = FastAPI(title="MDA Web API", version="0.1.0")
 
@@ -25,6 +30,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
 app.include_router(files.router, prefix="/api")
 app.include_router(config.router, prefix="/api")

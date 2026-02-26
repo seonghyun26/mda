@@ -45,6 +45,7 @@ def _load_hydra_cfg(overrides: list[str], work_dir: str):
 class Session:
     session_id: str
     work_dir: str
+    nickname: str = ""
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     sim_status: dict = field(default_factory=dict)
     # agent is set after __init__ to allow dataclass + post-init pattern
@@ -56,6 +57,7 @@ _sessions: dict[str, Session] = {}
 
 def create_session(
     work_dir: str,
+    nickname: str = "",
     method: str = "metadynamics",
     system: str = "protein",
     gromacs: str = "default",
@@ -74,7 +76,7 @@ def create_session(
     cfg = _load_hydra_cfg(overrides, work_dir)
 
     sid = str(uuid.uuid4())
-    session = Session(session_id=sid, work_dir=work_dir)
+    session = Session(session_id=sid, work_dir=work_dir, nickname=nickname)
     session.agent = MDAgent(cfg=cfg, work_dir=work_dir)
     _sessions[sid] = session
     return session
@@ -86,7 +88,7 @@ def get_session(session_id: str) -> Session | None:
 
 def list_sessions() -> list[dict]:
     return [
-        {"session_id": s.session_id, "work_dir": s.work_dir}
+        {"session_id": s.session_id, "work_dir": s.work_dir, "nickname": s.nickname}
         for s in _sessions.values()
     ]
 

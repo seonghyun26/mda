@@ -37,7 +37,9 @@ export type ToolCallBlock = {
   status: "pending" | "done" | "error";
 };
 
-export type MessageBlock = TextBlock | ThinkingBlock | ToolCallBlock;
+export type ErrorBlock = { kind: "error"; content: string };
+
+export type MessageBlock = TextBlock | ThinkingBlock | ToolCallBlock | ErrorBlock;
 
 export interface ChatMessage {
   id: string;

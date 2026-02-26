@@ -17,6 +17,14 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FRONTEND_DIR="$REPO_ROOT/web/frontend"
 OUT_DIR="$FRONTEND_DIR/out"
 
+# Load .env if present
+if [ -f "$REPO_ROOT/.env" ]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/.env"
+  set +a
+fi
+
 DEV=0
 FORCE_BUILD=0
 for arg in "$@"; do

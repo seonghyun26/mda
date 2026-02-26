@@ -25,6 +25,7 @@ router = APIRouter()
 
 class CreateSessionRequest(BaseModel):
     work_dir: str
+    nickname: str = ""
     method: str = "metadynamics"
     system: str = "protein"
     gromacs: str = "default"
@@ -38,18 +39,32 @@ async def create_session_endpoint(req: CreateSessionRequest):
     Path(req.work_dir).mkdir(parents=True, exist_ok=True)
     session = create_session(
         work_dir=req.work_dir,
+        nickname=req.nickname,
         method=req.method,
         system=req.system,
         gromacs=req.gromacs,
         plumed_cvs=req.plumed_cvs,
         extra_overrides=req.extra_overrides,
     )
-    return {"session_id": session.session_id, "work_dir": session.work_dir}
+    return {"session_id": session.session_id, "work_dir": session.work_dir, "nickname": session.nickname}
 
 
 @router.get("/sessions")
 async def list_sessions_endpoint():
     return {"sessions": list_sessions()}
+
+
+class NicknameRequest(BaseModel):
+    nickname: str
+
+
+@router.patch("/sessions/{session_id}/nickname")
+async def update_nickname(session_id: str, req: NicknameRequest):
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(404, "Session not found")
+    session.nickname = req.nickname.strip()
+    return {"session_id": session_id, "nickname": session.nickname}
 
 
 @router.delete("/sessions/{session_id}")
