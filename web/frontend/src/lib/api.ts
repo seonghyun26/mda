@@ -65,7 +65,8 @@ export async function restoreSession(
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
-  await fetch(`${BASE}/sessions/${sessionId}`, { method: "DELETE" });
+  const res = await fetch(`${BASE}/sessions/${sessionId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
 }
 
 export async function updateNickname(

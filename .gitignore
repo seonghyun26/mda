@@ -72,3 +72,4 @@ web/backend/__pycache__/
 web/__pycache__/
 *package-lock.json
 *package.json
+*.pytest_cache

@@ -112,7 +112,7 @@ async def create_session_endpoint(req: CreateSessionRequest):
         "status": "active",
         "updated_at": datetime.utcnow().isoformat(),
     }
-    (Path(req.work_dir) / "session.json").write_text(json.dumps(meta, indent=2))
+    (Path(req.work_dir).parent / "session.json").write_text(json.dumps(meta, indent=2))
 
     return {
         "session_id": session.session_id,
@@ -139,7 +139,7 @@ async def list_sessions_endpoint(username: str = ""):
             try:
                 data = json.loads(sf.read_text())
                 if "session_id" in data and "work_dir" in data:
-                    if data.get("status") == "deleted":
+                    if data.get("status") == "inactive":
                         continue
                     sessions.append({
                         "session_id": data["session_id"],
@@ -160,21 +160,23 @@ class NicknameRequest(BaseModel):
 
 @router.patch("/sessions/{session_id}/nickname")
 async def update_nickname(session_id: str, req: NicknameRequest):
-    import json
+    from datetime import datetime
+    nickname = req.nickname.strip()
+    # Update the in-memory session if it exists
     session = get_session(session_id)
-    if not session:
-        raise HTTPException(404, "Session not found")
-    session.nickname = req.nickname.strip()
-    # Persist nickname in work_dir/session.json
-    meta_path = Path(session.work_dir) / "session.json"
-    try:
-        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
-        meta.update({"session_id": session_id, "nickname": session.nickname, "work_dir": session.work_dir})
-        meta_path.parent.mkdir(parents=True, exist_ok=True)
-        meta_path.write_text(json.dumps(meta, indent=2))
-    except Exception:
-        pass
-    return {"session_id": session_id, "nickname": session.nickname}
+    if session:
+        session.nickname = nickname
+    # Scan disk and update session.json in-place, preserving all existing fields
+    for sf in Path("outputs").glob("*/*/session.json"):
+        try:
+            data = json.loads(sf.read_text())
+            if data.get("session_id") == session_id:
+                data.update({"nickname": nickname, "updated_at": datetime.utcnow().isoformat()})
+                sf.write_text(json.dumps(data, indent=2))
+                break
+        except Exception:
+            pass
+    return {"session_id": session_id, "nickname": nickname}
 
 
 class RestoreRequest(BaseModel):
@@ -192,36 +194,23 @@ async def restore_session_endpoint(session_id: str, req: RestoreRequest):
 
 @router.delete("/sessions/{session_id}")
 async def delete_session_endpoint(session_id: str):
-    session = get_session(session_id)
-
     # Stop any running simulation before removing the session
     stopped = stop_session_simulation(session_id)
 
-    # Mark session.json as deleted (preserves output folder)
+    # Scan disk directly by session_id and mark session.json as deleted in-place.
+    # This avoids relying on the in-memory session (which may not exist if the
+    # user deletes a session they never clicked on in the current browser tab).
     from datetime import datetime
-    work_dir = session.work_dir if session else None
-    if not work_dir:
-        # Try to find work_dir from session.json files on disk
-        import glob as _glob
-        for sf in Path("outputs").glob("*/*/session.json"):
-            try:
-                data = json.loads(sf.read_text())
-                if data.get("session_id") == session_id:
-                    work_dir = data.get("work_dir")
-                    break
-            except Exception:
-                pass
-
-    if work_dir:
-        meta_path = Path(work_dir) / "session.json"
+    for sf in Path("outputs").glob("*/*/session.json"):
         try:
-            meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
-            meta.update({
-                "session_id": session_id,
-                "status": "deleted",
-                "deleted_at": datetime.utcnow().isoformat(),
-            })
-            meta_path.write_text(json.dumps(meta, indent=2))
+            data = json.loads(sf.read_text())
+            if data.get("session_id") == session_id:
+                data.update({
+                    "status": "inactive",
+                    "updated_at": datetime.utcnow().isoformat(),
+                })
+                sf.write_text(json.dumps(data, indent=2))
+                break
         except Exception:
             pass
 

@@ -8,6 +8,7 @@ import {
   Zap,
   FlaskConical,
   Play,
+  Plus,
   RefreshCw,
   Eye,
   Upload,
@@ -57,18 +58,13 @@ function defaultNickname(): string {
 
 // ── Presets ───────────────────────────────────────────────────────────
 
-interface Preset {
-  id: string;
-  label: string;
-  description: string;
-  tag: string;
-}
+interface Preset { id: string; label: string; description: string; tag: string }
 
 const PRESETS: Preset[] = [
-  { id: "md",        label: "Molecular Dynamics",  description: "Unbiased MD — no enhanced sampling", tag: "MD" },
-  { id: "metad",     label: "Metadynamics",         description: "Well-tempered metadynamics with PLUMED", tag: "MetaD" },
-  { id: "umbrella",  label: "Umbrella Sampling",    description: "Umbrella sampling along a reaction coordinate", tag: "US" },
-  { id: "undefined", label: "Blank",                description: "Blank — configure everything with the assistant", tag: "" },
+  { id: "md",        label: "Molecular Dynamics", description: "Unbiased MD — no enhanced sampling",                     tag: "MD"    },
+  { id: "metad",     label: "Metadynamics",        description: "Well-tempered metadynamics with PLUMED",                tag: "MetaD" },
+  { id: "umbrella",  label: "Umbrella Sampling",   description: "Umbrella sampling along a reaction coordinate",         tag: "US"    },
+  { id: "undefined", label: "Blank",               description: "Blank — configure everything with the assistant",       tag: ""      },
 ];
 
 // ── System options ─────────────────────────────────────────────────────
@@ -77,8 +73,8 @@ interface SystemOption { id: string; label: string; description: string }
 
 const SYSTEMS: SystemOption[] = [
   { id: "ala_dipeptide", label: "Alanine Dipeptide",  description: "Blocked alanine dipeptide · Ace-Ala-Nme" },
-  { id: "chignolin",     label: "Chignolin (CLN025)", description: "10-residue β-hairpin mini-protein" },
-  { id: "blank",         label: "Blank",              description: "No system — configure manually" },
+  { id: "chignolin",     label: "Chignolin (CLN025)", description: "10-residue β-hairpin mini-protein"        },
+  { id: "blank",         label: "Blank",              description: "No system — configure manually"           },
 ];
 
 // ── GROMACS templates ──────────────────────────────────────────────────
@@ -86,10 +82,10 @@ const SYSTEMS: SystemOption[] = [
 interface GmxTemplate { id: string; label: string; description: string }
 
 const GMX_TEMPLATES: GmxTemplate[] = [
-  { id: "ala_vacuum", label: "Vacuum",  description: "Dodecahedron vacuum box · no solvent · fast" },
-  { id: "nvt",        label: "NVT",     description: "Canonical ensemble · constant volume · 100 ps" },
-  { id: "npt",        label: "NPT",     description: "Isobaric ensemble · Parrinello–Rahman barostat" },
-  { id: "blank",      label: "Blank",   description: "No template — configure manually" },
+  { id: "ala_vacuum", label: "Vacuum", description: "Dodecahedron vacuum box · no solvent · fast"        },
+  { id: "nvt",        label: "NVT",    description: "Canonical ensemble · constant volume · 100 ps"      },
+  { id: "npt",        label: "NPT",    description: "Isobaric ensemble · Parrinello–Rahman barostat"     },
+  { id: "blank",      label: "Blank",  description: "No template — configure manually"                   },
 ];
 
 // ── UI primitives ─────────────────────────────────────────────────────
@@ -674,7 +670,8 @@ function NewSessionForm({
     setError("");
     const nick = nickname.trim() || defaultNickname();
     const user = getUsername() || "default";
-    const workDir = `outputs/${user}/${nick}`;
+    const folderName = defaultNickname();
+    const workDir = `outputs/${user}/${folderName}/data`;
     try {
       const { session_id, work_dir, nickname: savedNick, seeded_files } = await createSession({
         workDir,
@@ -699,7 +696,6 @@ function NewSessionForm({
             <FlaskConical size={22} className="text-white" />
           </div>
           <h2 className="text-xl font-bold text-gray-100">New Session</h2>
-          <p className="text-sm text-gray-500 mt-1">saved to <code className="font-mono text-gray-600">outputs/{getUsername() || "default"}/{nickname || "…"}</code></p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -709,6 +705,7 @@ function NewSessionForm({
               Session name <span className="text-gray-600">(editable anytime)</span>
             </label>
             <input
+              autoFocus
               type="text"
               value={nickname}
               onChange={(e) => setNickname(e.target.value)}
@@ -719,6 +716,26 @@ function NewSessionForm({
 
           {/* Three selectors side by side */}
           <div className="grid grid-cols-3 gap-3">
+
+            {/* Molecule system */}
+            <div className="rounded-xl border border-gray-700/60 bg-gray-900/60 p-3 flex flex-col gap-1.5">
+              <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Molecule System</p>
+              {SYSTEMS.map((s) => (
+                <button
+                  key={s.id}
+                  type="button"
+                  onClick={() => setSystem(s.id)}
+                  className={`w-full text-left px-2.5 py-2 rounded-lg border transition-all ${
+                    system === s.id
+                      ? "border-indigo-600 bg-indigo-950/40 text-white"
+                      : "border-gray-700/60 bg-gray-800/40 text-gray-400 hover:border-gray-600 hover:text-gray-200"
+                  }`}
+                >
+                  <span className="text-xs font-medium">{s.label}</span>
+                  <p className="text-[10px] text-gray-600 mt-0.5 leading-snug">{s.description}</p>
+                </button>
+              ))}
+            </div>
 
             {/* Simulation method */}
             <div className="rounded-xl border border-gray-700/60 bg-gray-900/60 p-3 flex flex-col gap-1.5">
@@ -767,26 +784,6 @@ function NewSessionForm({
               ))}
             </div>
 
-            {/* Molecule system */}
-            <div className="rounded-xl border border-gray-700/60 bg-gray-900/60 p-3 flex flex-col gap-1.5">
-              <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">Molecule System</p>
-              {SYSTEMS.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  onClick={() => setSystem(s.id)}
-                  className={`w-full text-left px-2.5 py-2 rounded-lg border transition-all ${
-                    system === s.id
-                      ? "border-indigo-600 bg-indigo-950/40 text-white"
-                      : "border-gray-700/60 bg-gray-800/40 text-gray-400 hover:border-gray-600 hover:text-gray-200"
-                  }`}
-                >
-                  <span className="text-xs font-medium">{s.label}</span>
-                  <p className="text-[10px] text-gray-600 mt-0.5 leading-snug">{s.description}</p>
-                </button>
-              ))}
-            </div>
-
           </div>
 
           {error && (
@@ -815,9 +812,10 @@ interface Props {
   showNewForm: boolean;
   onSessionCreated: (id: string, workDir: string, nickname: string) => void;
   onStartMD: () => void;
+  onNewSession: () => void;
 }
 
-export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, onStartMD }: Props) {
+export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, onStartMD, onNewSession }: Props) {
   const [cfg, setCfg] = useState<Record<string, unknown>>({});
   const [saved, setSaved] = useState(false);
   const [activeTab, setActiveTab] = useState("progress");
@@ -880,9 +878,23 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
       );
     }
     return (
-      <div className="flex-1 flex flex-col items-center justify-center bg-gray-950 h-full gap-3">
-        <FlaskConical size={32} className="text-gray-700" />
-        <p className="text-sm text-gray-500">Select or create a session</p>
+      <div className="flex-1 flex flex-col items-center justify-center bg-gray-950 h-full gap-6 px-8">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <div className="w-16 h-16 rounded-2xl bg-gray-900 border border-gray-800 flex items-center justify-center">
+            <FlaskConical size={28} className="text-gray-600" />
+          </div>
+          <div>
+            <p className="text-sm font-medium text-gray-300">No session selected</p>
+            <p className="text-xs text-gray-600 mt-1">Select a session from the sidebar or create a new one to get started.</p>
+          </div>
+        </div>
+        <button
+          onClick={onNewSession}
+          className="flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors shadow-lg shadow-blue-900/30"
+        >
+          <Plus size={14} />
+          New Session
+        </button>
       </div>
     );
   }

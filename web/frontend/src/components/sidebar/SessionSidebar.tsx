@@ -80,43 +80,62 @@ function SessionItem({
   };
 
   return (
-    <div
-      onClick={async () => {
-        if (editing || confirming) return;
-        await restoreSession(s.session_id, s.work_dir, s.nickname);
-        onSelect();
-      }}
-      className={`group relative w-full rounded-lg transition-colors cursor-pointer ${
-        isActive ? "bg-gray-800 text-white" : "text-gray-400 hover:bg-gray-800/60 hover:text-gray-200"
-      }`}
-    >
-      {/* Delete confirmation overlay */}
+    <>
+      {/* Delete confirmation modal */}
       {confirming && (
         <div
-          className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1.5 rounded-lg bg-gray-900/95 border border-red-800/60 px-3"
-          onClick={(e) => e.stopPropagation()}
+          className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4"
+          onClick={cancelConfirm}
         >
-          <p className="text-[11px] text-red-300 font-medium">Delete this session?</p>
-          <p className="text-[10px] text-gray-500 text-center leading-tight">Output files are kept.</p>
-          <div className="flex gap-2 mt-0.5">
-            <button
-              onClick={confirmDelete}
-              disabled={deleting}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-red-700 hover:bg-red-600 text-white text-[11px] font-medium disabled:opacity-50 transition-colors"
-            >
-              {deleting ? "Deleting…" : <><Check size={10} /> Delete</>}
-            </button>
-            <button
-              onClick={cancelConfirm}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-gray-700 hover:bg-gray-600 text-gray-300 text-[11px] transition-colors"
-            >
-              <X size={10} /> Cancel
-            </button>
+          <div
+            className="bg-gray-900 border border-red-800/50 rounded-2xl shadow-2xl flex flex-col gap-4 p-6 w-full max-w-sm"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="p-2 rounded-lg bg-red-900/40 text-red-400 flex-shrink-0">
+                <Trash2 size={16} />
+              </div>
+              <div>
+                <h2 className="text-sm font-semibold text-white">Delete session?</h2>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  <span className="text-gray-300 font-medium">{nick}</span>
+                </p>
+                <p className="text-xs text-gray-600 mt-1">Output files on disk are kept.</p>
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={cancelConfirm}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors"
+              >
+                <X size={12} /> Cancel
+              </button>
+              <button
+                onClick={confirmDelete}
+                disabled={deleting}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-700 hover:bg-red-600 text-white text-xs font-medium disabled:opacity-50 transition-colors"
+              >
+                <Check size={12} /> {deleting ? "Deleting…" : "Delete"}
+              </button>
+            </div>
           </div>
         </div>
       )}
 
-      <div className="px-3 py-2.5">
+    <div
+      className={`group relative w-full rounded-lg transition-colors cursor-pointer flex overflow-hidden ${
+        isActive ? "bg-gray-800 text-white" : "text-gray-400 hover:bg-gray-800/60 hover:text-gray-200"
+      }`}
+    >
+      {/* Main content — clickable to select */}
+      <div
+        className="flex-1 min-w-0 px-3 py-2.5"
+        onClick={async () => {
+          if (editing || confirming) return;
+          await restoreSession(s.session_id, s.work_dir, s.nickname);
+          onSelect();
+        }}
+      >
         <div className="flex items-center gap-1.5 mb-0.5">
           <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-transparent"}`} />
           {editing ? (
@@ -141,25 +160,35 @@ function SessionItem({
               </button>
             </div>
           ) : (
-            <>
-              <span className="text-xs font-medium truncate flex-1">{nick}</span>
-              {/* Action icons — visible on row hover */}
-              <div className="opacity-0 group-hover:opacity-100 flex flex-col gap-0.5 flex-shrink-0 transition-opacity">
-                <button onClick={startEdit} className="text-gray-600 hover:text-gray-300" title="Rename">
-                  <Pencil size={10} />
-                </button>
-                <button onClick={startConfirm} className="text-gray-600 hover:text-red-400" title="Delete">
-                  <Trash2 size={10} />
-                </button>
-              </div>
-            </>
+            <span className="text-xs font-medium truncate flex-1">{nick}</span>
           )}
         </div>
         {!editing && (
           <div className="pl-3 text-[10px] text-gray-600 font-mono truncate">{s.session_id.slice(0, 8)}…</div>
         )}
       </div>
+
+      {/* Full-height action buttons — visible on hover */}
+      {!editing && (
+        <div className="opacity-0 group-hover:opacity-100 flex flex-shrink-0 transition-opacity border-l border-gray-700/40">
+          <button
+            onClick={startEdit}
+            className="flex items-center justify-center w-7 text-gray-600 hover:text-gray-300 hover:bg-gray-700/30 transition-colors"
+            title="Rename"
+          >
+            <Pencil size={10} />
+          </button>
+          <button
+            onClick={startConfirm}
+            className="flex items-center justify-center w-7 text-gray-600 hover:text-red-400 hover:bg-red-900/20 transition-colors border-l border-gray-700/40"
+            title="Delete"
+          >
+            <Trash2 size={10} />
+          </button>
+        </div>
+      )}
     </div>
+    </>
   );
 }
 

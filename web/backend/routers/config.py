@@ -88,14 +88,18 @@ async def generate_session_files(session_id: str):
     except Exception as exc:
         raise HTTPException(500, f"MDP generation failed: {exc}")
 
-    # ── session.json metadata ─────────────────────────────────────────────
-    meta = {
+    # ── session.json metadata (lives in session root, parent of data/) ───────
+    session_root = work_dir.parent
+    session_root.mkdir(parents=True, exist_ok=True)
+    meta_path = session_root / "session.json"
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    meta.update({
         "session_id": session_id,
         "nickname": session.nickname,
         "work_dir": session.work_dir,
         "updated_at": datetime.utcnow().isoformat(),
-    }
-    (work_dir / "session.json").write_text(json.dumps(meta, indent=2))
-    generated.append("session.json")
+    })
+    meta.setdefault("status", "active")
+    meta_path.write_text(json.dumps(meta, indent=2))
 
     return {"generated": generated, "work_dir": str(work_dir)}

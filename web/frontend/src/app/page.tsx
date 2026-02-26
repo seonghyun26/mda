@@ -89,6 +89,7 @@ export default function App() {
         showNewForm={showNewSession}
         onSessionCreated={handleSessionCreated}
         onStartMD={handleStartMD}
+        onNewSession={handleNewSession}
       />
 
       {/* Right: Chat panel */}
