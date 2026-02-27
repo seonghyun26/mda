@@ -1,0 +1,3 @@
+[submodule "gromacs-plumed-docker"]
+	path = gromacs-plumed-docker
+	url = https://github.com/seonghyun26/gromacs-plumed-docker
