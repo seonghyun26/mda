@@ -207,6 +207,28 @@ export async function getMolecules(): Promise<{
   return json(await fetch(`${BASE}/molecules`));
 }
 
+// ── API keys ──────────────────────────────────────────────────────────
+
+export async function getApiKeys(username: string): Promise<{ keys: Record<string, string> }> {
+  return json(await fetch(`${BASE}/users/${encodeURIComponent(username)}/api-keys`));
+}
+
+export async function setApiKey(
+  username: string,
+  service: string,
+  apiKey: string
+): Promise<{ updated: boolean }> {
+  const res = await fetch(
+    `${BASE}/users/${encodeURIComponent(username)}/api-keys/${encodeURIComponent(service)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_key: apiKey }),
+    }
+  );
+  return json(res);
+}
+
 export async function loadMolecule(
   sessionId: string,
   system: string,

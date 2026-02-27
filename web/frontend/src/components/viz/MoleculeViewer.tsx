@@ -40,7 +40,7 @@ const REP_LABELS: { key: keyof RepState; label: string }[] = [
 function applyRepresentations(component: any, reps: RepState) {
   component.removeAllRepresentations();
   if (reps.ball) {
-    component.addRepresentation("spacefill", { colorScheme: "element", radiusScale: 0.1 });
+    component.addRepresentation("spacefill", { colorScheme: "element", radiusScale: 0.2 });
   }
   if (reps.stick) {
     component.addRepresentation("licorice", { colorScheme: "element" });

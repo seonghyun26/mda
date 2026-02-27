@@ -66,10 +66,9 @@ function defaultNickname(): string {
 interface Preset { id: string; label: string; description: string; tag: string }
 
 const PRESETS: Preset[] = [
-  { id: "md",        label: "Molecular Dynamics", description: "Unbiased MD — no enhanced sampling",                     tag: "MD"    },
-  { id: "metad",     label: "Metadynamics",        description: "Well-tempered metadynamics with PLUMED",                tag: "MetaD" },
-  { id: "umbrella",  label: "Umbrella Sampling",   description: "Umbrella sampling along a reaction coordinate",         tag: "US"    },
-  { id: "undefined", label: "Blank",               description: "Blank — configure everything with the assistant",       tag: ""      },
+  { id: "md",       label: "Molecular Dynamics", description: "Unbiased MD — no enhanced sampling",             tag: "MD"    },
+  { id: "metad",    label: "Metadynamics",        description: "Well-tempered metadynamics with PLUMED",        tag: "MetaD" },
+  { id: "umbrella", label: "Umbrella Sampling",   description: "Umbrella sampling along a reaction coordinate", tag: "US"    },
 ];
 
 // ── System options ─────────────────────────────────────────────────────
@@ -109,11 +108,13 @@ function Section({
   title,
   children,
   accent = "blue",
+  action,
 }: {
   icon: React.ReactNode;
   title: string;
   children: React.ReactNode;
   accent?: "blue" | "indigo" | "emerald" | "amber";
+  action?: React.ReactNode;
 }) {
   const border = {
     blue: "border-blue-800/40",
@@ -133,6 +134,7 @@ function Section({
       <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-800/60">
         <span className={`p-1 rounded-md ${iconBg}`}>{icon}</span>
         <span className="text-xs font-semibold text-gray-300 tracking-wide uppercase">{title}</span>
+        {action && <span className="ml-auto">{action}</span>}
       </div>
       <div className="p-4 space-y-3">{children}</div>
     </div>
@@ -287,11 +289,11 @@ function ProgressTab({ sessionId }: { sessionId: string }) {
       </div>
 
       {/* Files section */}
-      <Section icon={<FileText size={13} />} title="Files" accent="emerald">
-        <div className="flex items-center justify-between -mt-1 mb-2">
-          <span className="text-xs text-gray-500">
-            {simFiles.length} file{simFiles.length !== 1 ? "s" : ""}
-          </span>
+      <Section
+        icon={<FileText size={13} />}
+        title={`Files${simFiles.length > 0 ? ` (${simFiles.length})` : ""}`}
+        accent="emerald"
+        action={
           <div className="flex items-center gap-2">
             <button
               onClick={refreshFiles}
@@ -303,13 +305,14 @@ function ProgressTab({ sessionId }: { sessionId: string }) {
             <a
               href={downloadZipUrl(sessionId)}
               download
-              className="flex items-center gap-1 px-2 py-1 rounded-md text-xs bg-emerald-700/70 hover:bg-emerald-600 text-emerald-200 border border-emerald-700/50 transition-colors"
+              className="flex items-center gap-1 text-gray-600 hover:text-gray-400 transition-colors"
+              title="Download ZIP"
             >
-              <Download size={10} />
-              Download ZIP
+              <Download size={11} />
             </a>
           </div>
-        </div>
+        }
+      >
         {simFiles.length === 0 ? (
           <p className="text-xs text-gray-600 py-1">No simulation files yet.</p>
         ) : (
@@ -438,9 +441,11 @@ function MoleculeTab({
       )}
 
       {/* Molecule files + integrated upload */}
-      <Section icon={<FlaskConical size={13} />} title="Molecule Files" accent="indigo">
-        <div className="flex items-center justify-between -mt-1 mb-1">
-          <span className="text-xs text-gray-500">PDB, GRO, MOL2 — select to visualize</span>
+      <Section
+        icon={<FlaskConical size={13} />}
+        title="Molecule Files"
+        accent="indigo"
+        action={
           <button
             onClick={refreshFiles}
             className="text-gray-600 hover:text-gray-400 transition-colors"
@@ -448,7 +453,8 @@ function MoleculeTab({
           >
             <RefreshCw size={11} className={loading ? "animate-spin" : ""} />
           </button>
-        </div>
+        }
+      >
 
         {molFiles.length > 0 && (
           <div className="space-y-1.5 mb-3">
@@ -537,25 +543,46 @@ function GromacsTab({
       </div>
 
       {/* Simulation length */}
-      <Section icon={<Binary size={13} />} title="Simulation Length" accent="blue">
-        <FieldGrid>
-          <Field
-            label="Steps"
-            type="number"
-            value={String(method.nsteps ?? "")}
-            onChange={(v) => onChange("method.nsteps", Number(v))}
-            hint="Total MD steps to run."
-          />
-          <Field
-            label="Timestep"
-            type="number"
-            value={String(gromacs.dt ?? "0.002")}
-            onChange={(v) => onChange("gromacs.dt", Number(v))}
-            unit="ps"
-            hint="2 fs is standard."
-          />
-        </FieldGrid>
-      </Section>
+      {(() => {
+        const nsteps = Number(method.nsteps ?? 0);
+        const dt = Number(gromacs.dt ?? 0.002);
+        const totalPs = nsteps * dt;
+        const totalLabel = nsteps > 0
+          ? totalPs < 1
+            ? `${(totalPs * 1000).toFixed(0)} fs`
+            : totalPs < 1000
+              ? `${totalPs % 1 === 0 ? totalPs.toFixed(0) : totalPs.toFixed(2)} ps`
+              : `${(totalPs / 1000).toFixed(3).replace(/\.?0+$/, "")} ns`
+          : null;
+        return (
+          <Section
+            icon={<Binary size={13} />}
+            title="Simulation Length"
+            accent="blue"
+            action={totalLabel && (
+              <span className="text-xs font-mono text-blue-400">{totalLabel}</span>
+            )}
+          >
+            <FieldGrid>
+              <Field
+                label="Steps"
+                type="number"
+                value={String(method.nsteps ?? "")}
+                onChange={(v) => onChange("method.nsteps", Number(v))}
+                hint="Total MD steps to run."
+              />
+              <Field
+                label="Timestep"
+                type="number"
+                value={String(Number(gromacs.dt ?? 0.002) * 1000)}
+                onChange={(v) => onChange("gromacs.dt", Number(v) / 1000)}
+                unit="fs"
+                hint="2 fs is standard."
+              />
+            </FieldGrid>
+          </Section>
+        );
+      })()}
 
       {/* Thermostat */}
       <Section icon={<Thermometer size={13} />} title="Temperature" accent="amber">
@@ -596,10 +623,9 @@ function GromacsTab({
 // ── Method tab (includes PLUMED) ────────────────────────────────────────
 
 const METHOD_OPTIONS = [
-  { id: "md",        label: "Molecular Dynamics",  tag: "MD" },
-  { id: "metad",     label: "Metadynamics",         tag: "MetaD" },
-  { id: "umbrella",  label: "Umbrella Sampling",    tag: "US" },
-  { id: "undefined", label: "Undefined",            tag: "" },
+  { id: "md",       label: "Molecular Dynamics", tag: "MD" },
+  { id: "metad",    label: "Metadynamics",        tag: "MetaD" },
+  { id: "umbrella", label: "Umbrella Sampling",   tag: "US" },
 ];
 
 function MethodTab({
@@ -620,8 +646,8 @@ function MethodTab({
   const [agentOpen, setAgentOpen] = useState(false);
   const [methodOpen, setMethodOpen] = useState(false);
 
-  const currentMethodId = (method._target_name as string) ?? "undefined";
-  const currentMethod = METHOD_OPTIONS.find((m) => m.id === currentMethodId) ?? METHOD_OPTIONS[3];
+  const currentMethodId = (method._target_name as string) ?? "md";
+  const currentMethod = METHOD_OPTIONS.find((m) => m.id === currentMethodId) ?? METHOD_OPTIONS[0];
   const isMetaD = currentMethodId === "metad" || currentMethodId === "metadynamics";
 
   const handleMethodChange = (id: string) => {

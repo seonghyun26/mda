@@ -1,10 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { FlaskConical, Plus, LogOut, Pencil, Check, X, Settings, Trash2 } from "lucide-react";
+import { FlaskConical, Plus, LogOut, Pencil, Check, X, Settings, Trash2, Info, Eye, EyeOff } from "lucide-react";
 import { useSessionStore } from "@/store/sessionStore";
 import { logout, getUsername } from "@/lib/auth";
-import { updateNickname, restoreSession, deleteSession } from "@/lib/api";
+import { updateNickname, restoreSession, deleteSession, getApiKeys, setApiKey } from "@/lib/api";
 import { useRouter } from "next/navigation";
 
 interface Props {
@@ -192,10 +192,110 @@ function SessionItem({
   );
 }
 
+// ── Information modal ──────────────────────────────────────────────────
+
+function InformationModal({ username, onClose }: { username: string; onClose: () => void }) {
+  const [wandbKey, setWandbKey] = useState("");
+  const [showKey, setShowKey] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    getApiKeys(username).then(({ keys }) => {
+      setWandbKey(keys["wandb"] ?? "");
+    });
+  }, [username]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await setApiKey(username, "wandb", wandbKey);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+
+      {/* Modal */}
+      <div className="relative w-[380px] bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+          <div className="flex items-center gap-2">
+            <Info size={15} className="text-indigo-400" />
+            <span className="text-sm font-semibold text-gray-100">Account Information</span>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-300 transition-colors">
+            <X size={15} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="px-5 py-4 space-y-5">
+          {/* User info */}
+          <div className="flex items-center gap-3 pb-3 border-b border-gray-800">
+            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center text-white text-sm font-semibold shadow">
+              {username[0]?.toUpperCase() ?? "?"}
+            </div>
+            <div>
+              <div className="text-sm font-medium text-gray-100">{username}</div>
+              <div className="text-[11px] text-gray-500">Signed in</div>
+            </div>
+          </div>
+
+          {/* API Keys section */}
+          <div className="space-y-3">
+            <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">API Keys</h4>
+
+            {/* WandB */}
+            <div className="space-y-1.5">
+              <label className="flex items-center gap-1.5 text-xs font-medium text-gray-300">
+                <span className="w-2 h-2 rounded-full bg-yellow-400 inline-block" />
+                Weights & Biases (WandB)
+              </label>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <input
+                    type={showKey ? "text" : "password"}
+                    value={wandbKey}
+                    onChange={(e) => setWandbKey(e.target.value)}
+                    placeholder="Enter WandB API key"
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500 pr-8"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowKey((v) => !v)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors"
+                  >
+                    {showKey ? <EyeOff size={12} /> : <Eye size={12} />}
+                  </button>
+                </div>
+                <button
+                  onClick={handleSave}
+                  disabled={saving}
+                  className="px-3 py-2 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white transition-colors"
+                >
+                  {saved ? <Check size={12} /> : saving ? "…" : "Save"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Profile section ────────────────────────────────────────────────────
 
 function ProfileSection({ username, onLogout }: { username: string; onLogout: () => void }) {
   const [open, setOpen] = useState(false);
+  const [infoOpen, setInfoOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const initial = username ? username[0].toUpperCase() : "?";
 
@@ -241,6 +341,13 @@ function ProfileSection({ username, onLogout }: { username: string; onLogout: ()
           </div>
           {/* Actions */}
           <button
+            onClick={() => { setOpen(false); setInfoOpen(true); }}
+            className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-gray-400 hover:text-gray-100 hover:bg-gray-700/60 transition-colors"
+          >
+            <Info size={13} />
+            Information
+          </button>
+          <button
             onClick={() => { setOpen(false); onLogout(); }}
             className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-gray-400 hover:text-red-400 hover:bg-gray-700/60 transition-colors"
           >
@@ -248,6 +355,10 @@ function ProfileSection({ username, onLogout }: { username: string; onLogout: ()
             Sign out
           </button>
         </div>
+      )}
+
+      {infoOpen && (
+        <InformationModal username={username} onClose={() => setInfoOpen(false)} />
       )}
     </div>
   );

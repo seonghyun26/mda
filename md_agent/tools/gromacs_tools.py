@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,16 +36,40 @@ class GROMACSRunner:
 
     ``mdrun`` is launched as a non-blocking ``Popen`` so the calling code can
     start the WandB monitor immediately after.  All other commands block.
+
+    When ``GMX_DOCKER_IMAGE`` is set in the environment, every ``gmx`` call is
+    wrapped in ``docker run --rm -w /work -v {work_dir}:/work {image} gmx ...``
+    so that GROMACS runs inside the container with the session directory
+    bind-mounted at ``/work``.
     """
 
     def __init__(self, gmx_executable: str = "gmx", work_dir: str = "."):
         self.gmx = gmx_executable
         self.work_dir = Path(work_dir)
         self._mdrun_proc: Optional[subprocess.Popen] = None
+        self._docker_image: Optional[str] = os.environ.get("GMX_DOCKER_IMAGE")
         # Ensure mdrun is terminated if Python exits unexpectedly
         atexit.register(self._cleanup)
 
     # ── Internal helpers ────────────────────────────────────────────────
+
+    def _build_cmd(
+        self,
+        gmx_args: list[str],
+        work_dir: Path,
+        gpu_id: Optional[str] = None,
+    ) -> list[str]:
+        """Return the full command list, Docker-wrapped when image is configured."""
+        if self._docker_image:
+            docker_prefix = [
+                "docker", "run", "--rm",
+                "-w", "/work",
+                "-v", f"{work_dir.resolve()}:/work",
+            ]
+            if gpu_id:
+                docker_prefix += ["--gpus", f"device={gpu_id}"]
+            return docker_prefix + [self._docker_image, self.gmx] + gmx_args
+        return [self.gmx] + gmx_args
 
     def _run(
         self,
@@ -53,7 +78,7 @@ class GROMACSRunner:
         timeout: Optional[int] = None,
     ) -> GMXResult:
         """Run a blocking gmx subcommand."""
-        cmd = [self.gmx] + args
+        cmd = self._build_cmd(args, self.work_dir)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE if stdin_text else None,
@@ -141,7 +166,7 @@ class GROMACSRunner:
             args.extend(extra_flags)
 
         self._mdrun_proc = subprocess.Popen(
-            [self.gmx] + args,
+            self._build_cmd(args, self.work_dir, gpu_id=gpu_id),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,  # merge stderr into stdout for live tailing
             cwd=str(self.work_dir),
@@ -192,6 +217,7 @@ class GROMACSRunner:
         self.work_dir = Path(work_dir)
         result = self._run([subcommand] + args, stdin_text=stdin_text)
         self.work_dir = orig_work_dir
+
         return result.to_dict()
 
     def check_gromacs_energy(

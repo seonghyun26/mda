@@ -67,6 +67,16 @@ def init_db() -> None:
                 created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS user_api_keys (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                username   TEXT    NOT NULL,
+                service    TEXT    NOT NULL,
+                api_key    TEXT    NOT NULL DEFAULT '',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(username, service)
+            )
+        """)
         for username, password in _DEFAULT_USERS:
             exists = con.execute(
                 "SELECT 1 FROM users WHERE username = ?", (username,)
@@ -85,6 +95,30 @@ def verify_user(username: str, password: str) -> bool:
             "SELECT password_hash FROM users WHERE username = ?", (username,)
         ).fetchone()
     return _verify_password(password, row[0]) if row else False
+
+
+def get_api_keys(username: str) -> dict[str, str]:
+    """Return all API keys for a user as {service: key}."""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT service, api_key FROM user_api_keys WHERE username = ?", (username,)
+        ).fetchall()
+    return {row[0]: row[1] for row in rows}
+
+
+def set_api_key(username: str, service: str, api_key: str) -> None:
+    """Insert or update an API key for a user/service pair."""
+    with _conn() as con:
+        con.execute(
+            """
+            INSERT INTO user_api_keys (username, service, api_key, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(username, service) DO UPDATE SET
+                api_key    = excluded.api_key,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (username, service, api_key),
+        )
 
 
 def add_user(username: str, password: str) -> None:
