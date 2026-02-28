@@ -27,6 +27,9 @@ tau_p: 2.0
 ref_p: ${gromacs.pressure}
 compressibility: 4.5e-5
 
+# Box setup (used by editconf before solvation/vacuum runs; not an MDP key)
+box_clearance: 1.5      # nm — minimum distance between molecule and box edge
+
 # Neighbor searching
 cutoff_scheme: Verlet
 nstlist: 10

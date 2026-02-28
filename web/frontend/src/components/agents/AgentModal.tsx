@@ -48,6 +48,10 @@ const TOOL_ICONS: Record<string, string> = {
   fetch_arxiv_paper: "📄",
   download_and_read_paper: "⬇️",
   extract_md_settings_from_paper: "🧠",
+  search_rcsb_pdb: "🗄️",
+  download_pdb_to_session: "💾",
+  update_session_config: "⚙️",
+  write_plumed_dat: "📝",
   list_simulation_files: "📁",
   read_colvar_stats: "📈",
   read_hills_stats: "⛰️",
@@ -121,10 +125,10 @@ interface AgentConfig {
 
 const AGENT_CONFIGS: Record<AgentType, AgentConfig> = {
   paper: {
-    title: "Paper Config Extractor",
-    description: "Finds a paper, reads the Methods section, and extracts GROMACS + PLUMED settings.",
-    inputLabel: "arXiv ID or search query",
-    inputPlaceholder: "e.g. 2301.12345  or  'metadynamics alanine dipeptide 2023'",
+    title: "Molecule Search Agent",
+    description: "Finds PDB structures from RCSB and downloads them, or extracts GROMACS + PLUMED settings from a paper.",
+    inputLabel: "PDB search, arXiv ID, or paper query",
+    inputPlaceholder: "e.g. 'ubiquitin human'  or  2301.12345  or  'chignolin folding metadynamics'",
     accent: "blue",
   },
   analysis: {

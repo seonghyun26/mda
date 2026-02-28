@@ -19,6 +19,9 @@ ref_t:
 # No pressure coupling (vacuum box)
 pcoupl: "no"
 
+# Box setup (used by editconf; not an MDP key)
+box_clearance: 1.2      # nm — minimum distance between molecule and box edge
+
 # Neighbor searching
 cutoff_scheme: Verlet
 nstlist: 10

@@ -193,6 +193,23 @@ def _make_tools(work_dir: str):
             f"PACE={pace}{wt_line} FILE=HILLS LABEL=metad"
         )
 
+    @tool
+    def write_plumed_dat(content: str, filename: str = "plumed.dat") -> str:
+        """Write a PLUMED input file into this session's work directory.
+        Only filenames without path separators are accepted — writing outside
+        the session directory is refused.
+        content: full PLUMED .dat file text to write.
+        filename: target filename (default: plumed.dat). Must not contain '/' or '..'.
+        """
+        if "/" in filename or "\\" in filename or ".." in filename:
+            return json.dumps({"error": "filename must not contain path separators or '..'"})
+        dest = wd / filename
+        # Resolve and verify destination stays inside work_dir
+        if not str(dest.resolve()).startswith(str(wd.resolve())):
+            return json.dumps({"error": "Refusing to write outside session directory."})
+        dest.write_text(content)
+        return json.dumps({"saved_path": str(dest), "filename": filename, "bytes": len(content)})
+
     return [
         list_structure_files,
         read_atom_list,
@@ -201,7 +218,41 @@ def _make_tools(work_dir: str):
         generate_distance_cv,
         generate_rmsd_cv,
         generate_metadynamics_bias,
+        write_plumed_dat,
     ]
+
+
+def _make_session_config_tools(work_dir: str, session):
+    """Return a config-update tool scoped to this session's work_dir."""
+    wd = Path(work_dir).resolve()
+
+    @tool
+    def update_session_config(updates_json: str) -> str:
+        """Apply PLUMED / CV settings to this session's config.yaml.
+        updates_json: JSON object with OmegaConf dot-key → value pairs.
+        Example: {"plumed.collective_variables.phi.atoms": [5, 7, 9, 15]}
+        Only modifies the current session's config — never touches other sessions.
+        """
+        try:
+            updates = json.loads(updates_json)
+            if not isinstance(updates, dict):
+                return json.dumps({"error": "updates_json must be a JSON object"})
+            from omegaconf import OmegaConf
+            cfg = session.agent.cfg
+            applied: list[str] = []
+            for key, value in updates.items():
+                try:
+                    OmegaConf.update(cfg, key, value, merge=True)
+                    applied.append(key)
+                except Exception as e:
+                    return json.dumps({"error": f"Failed to set {key}: {e}"})
+            cfg_path = wd / "config.yaml"
+            OmegaConf.save(cfg, str(cfg_path))
+            return json.dumps({"updated": True, "applied_keys": applied})
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
+    return [update_session_config]
 
 
 # ── System prompt ──────────────────────────────────────────────────────
@@ -219,6 +270,7 @@ molecular dynamics simulations using PLUMED.
    - Generate the PLUMED CV definitions
 5. Generate a METADYNAMICS bias section with reasonable initial parameters
 6. Summarise your choices and explain why you selected these CVs
+7. Offer to save the PLUMED definitions using `write_plumed_dat` — only after user confirms
 
 ## Output format
 Produce ready-to-use PLUMED input lines in a code block, plus brief explanations:
@@ -236,6 +288,7 @@ PRINT ARG=phi,psi,metad.bias STRIDE=100 FILE=COLVAR
 - For well-tempered metadynamics, biasfactor γ = 5–15 is typical
 - Sigma should be ~0.2–0.5 rad for torsions, ~0.05–0.2 nm for distances
 - If the user did not specify a goal, ask for clarification before suggesting CVs
+- `write_plumed_dat` and `update_session_config` are scoped to the current session only
 """
 
 
@@ -244,9 +297,11 @@ PRINT ARG=phi,psi,metad.bias STRIDE=100 FILE=COLVAR
 class CVAgent:
     """LangChain specialist agent for CV selection and PLUMED definition generation."""
 
-    def __init__(self, work_dir: str) -> None:
+    def __init__(self, work_dir: str, session=None) -> None:
         self.work_dir = work_dir
         tools = _make_tools(work_dir)
+        if session is not None:
+            tools.extend(_make_session_config_tools(work_dir, session))
         self.executor = build_executor(SYSTEM_PROMPT, tools, max_iterations=10)
 
     def run(self, task: str) -> str:

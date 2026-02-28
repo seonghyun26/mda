@@ -161,11 +161,24 @@ export function downloadZipUrl(sessionId: string): string {
   return `${BASE}/sessions/${sessionId}/files/download-zip`;
 }
 
-export async function deleteFile(sessionId: string, path: string): Promise<{ deleted: string }> {
+export async function deleteFile(sessionId: string, path: string): Promise<{ archived: string }> {
   const res = await fetch(
     `${BASE}/sessions/${sessionId}/files?path=${encodeURIComponent(path)}`,
     { method: "DELETE" }
   );
+  return json(res);
+}
+
+export async function listArchiveFiles(sessionId: string): Promise<{ files: string[] }> {
+  return json(await fetch(`${BASE}/sessions/${sessionId}/files/archive`));
+}
+
+export async function restoreFile(sessionId: string, path: string): Promise<{ restored: string }> {
+  const res = await fetch(`${BASE}/sessions/${sessionId}/files/restore`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
   return json(res);
 }
 

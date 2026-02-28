@@ -27,6 +27,11 @@ import {
   Bot,
   Download,
   Trash2,
+  ChevronDown,
+  ChevronRight,
+  X,
+  Archive,
+  RotateCcw,
 } from "lucide-react";
 
 import AgentModal from "@/components/agents/AgentModal";
@@ -47,6 +52,8 @@ import {
   downloadZipUrl,
   getFileContent,
   deleteFile,
+  listArchiveFiles,
+  restoreFile,
   createSession,
   updateSessionMolecule,
   startSimulation,
@@ -100,7 +107,7 @@ interface GmxTemplate { id: string; label: string; description: string }
 
 const GMX_TEMPLATES: GmxTemplate[] = [
   { id: "ala_vacuum", label: "Vacuum", description: "Dodecahedron vacuum box · no solvent · fast" },
-  { id: "blank",      label: "Blank",  description: "No template — configure manually"            },
+  { id: "auto",       label: "Auto",   description: "Maximally compatible defaults · PME · solvated" },
 ];
 
 // ── UI primitives ─────────────────────────────────────────────────────
@@ -266,12 +273,161 @@ function isMolFile(path: string) {
   return MOL_EXTS.has(path.split(".").pop()?.toLowerCase() ?? "");
 }
 
+// ── File preview helpers ────────────────────────────────────────────────
+
+const _BINARY_EXTS = new Set([".xtc", ".trr", ".edr", ".tpr", ".cpt", ".xdr", ".dms", ".gsd"]);
+const _VIEWER_EXTS = new Set([".pdb", ".gro"]);
+
+function canPreview(name: string): "viewer" | "text" | "binary" {
+  const ext = "." + (name.split(".").pop() ?? "").toLowerCase();
+  if (_BINARY_EXTS.has(ext)) return "binary";
+  if (_VIEWER_EXTS.has(ext)) return "viewer";
+  return "text";  // all other extensions treated as plain text
+}
+
+// ── File preview modal ─────────────────────────────────────────────────
+
+function FilePreviewModal({
+  sessionId,
+  path,
+  onClose,
+}: {
+  sessionId: string;
+  path: string;
+  onClose: () => void;
+}) {
+  const name = path.split("/").pop() ?? path;
+  const kind = canPreview(name);
+  const [content, setContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(kind !== "binary");
+
+  useEffect(() => {
+    if (kind === "binary") return;
+    setLoading(true);
+    getFileContent(sessionId, path)
+      .then((text) => setContent(text.length > 200_000 ? text.slice(0, 200_000) + "\n…[truncated]" : text))
+      .catch((e) => setContent(`Error loading file: ${e}`))
+      .finally(() => setLoading(false));
+  }, [sessionId, path, kind]);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-gray-900 rounded-2xl flex flex-col shadow-2xl border border-gray-700 overflow-hidden"
+        style={{ width: "min(900px, 92vw)", height: "80vh" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 bg-gray-800 border-b border-gray-700 flex-shrink-0">
+          <span className="text-sm font-mono text-gray-200 truncate">{name}</span>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <a
+              href={downloadUrl(sessionId, path)}
+              download={name}
+              className="flex items-center gap-1 px-2 py-1 rounded text-xs text-gray-400 hover:text-gray-200 hover:bg-gray-700 transition-colors"
+            >
+              <Download size={12} />
+              Download
+            </a>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
+            >
+              <X size={15} />
+            </button>
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-hidden">
+          {kind === "binary" ? (
+            <div className="h-full flex flex-col items-center justify-center gap-3 text-gray-500">
+              <FileText size={32} className="opacity-30" />
+              <p className="text-sm">Binary file — cannot preview.</p>
+              <a
+                href={downloadUrl(sessionId, path)}
+                download={name}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 border border-gray-700 text-gray-300 hover:text-white text-sm transition-colors"
+              >
+                <Download size={13} /> Download
+              </a>
+            </div>
+          ) : loading ? (
+            <div className="h-full flex items-center justify-center text-gray-500">
+              <Loader2 size={20} className="animate-spin mr-2" />
+              <span className="text-sm">Loading…</span>
+            </div>
+          ) : kind === "viewer" ? (
+            <div className="h-full p-3">
+              <MoleculeViewer fileContent={content!} fileName={name} inline />
+            </div>
+          ) : (
+            <pre className="h-full overflow-auto p-4 text-[11px] font-mono text-gray-300 leading-relaxed whitespace-pre-wrap break-all bg-gray-950">
+              {content}
+            </pre>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Delete confirmation popup ──────────────────────────────────────────
+
+function DeleteConfirmPopup({
+  name,
+  onConfirm,
+  onCancel,
+}: {
+  name: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={onCancel}>
+      <div
+        className="bg-gray-900 border border-gray-700 rounded-2xl shadow-2xl p-5 w-full max-w-sm"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="text-sm font-semibold text-gray-100 mb-1">Move to archive?</h3>
+        <p className="text-xs text-gray-400 mb-4">
+          <span className="font-mono text-gray-300">{name}</span> will be moved to the session&apos;s
+          archive folder. You can recover it manually.
+        </p>
+        <div className="flex gap-2 justify-end">
+          <button
+            onClick={onCancel}
+            className="px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:text-gray-200 border border-gray-700 hover:bg-gray-800 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-900/60 hover:bg-red-800/70 border border-red-700/60 text-red-300 hover:text-red-100 transition-colors"
+          >
+            Move to archive
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Progress tab ───────────────────────────────────────────────────────
 
 function ProgressTab({ sessionId }: { sessionId: string }) {
   const [agentOpen, setAgentOpen] = useState(false);
   const [simFiles, setSimFiles] = useState<string[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [deletingPath, setDeletingPath] = useState<string | null>(null);
+
+  // Archive panel
+  const [showArchive, setShowArchive] = useState(false);
+  const [archiveFiles, setArchiveFiles] = useState<string[]>([]);
+  const [archiveLoading, setArchiveLoading] = useState(false);
+  const [restoringPath, setRestoringPath] = useState<string | null>(null);
 
   const refreshFiles = useCallback(() => {
     setFilesLoading(true);
@@ -281,9 +437,50 @@ function ProgressTab({ sessionId }: { sessionId: string }) {
       .finally(() => setFilesLoading(false));
   }, [sessionId]);
 
+  const refreshArchive = useCallback(() => {
+    setArchiveLoading(true);
+    listArchiveFiles(sessionId)
+      .then(({ files }) => setArchiveFiles(files))
+      .catch(() => {})
+      .finally(() => setArchiveLoading(false));
+  }, [sessionId]);
+
   useEffect(() => {
     refreshFiles();
   }, [refreshFiles]);
+
+  // Load archive list whenever the panel is opened
+  useEffect(() => {
+    if (showArchive) refreshArchive();
+  }, [showArchive, refreshArchive]);
+
+  const handleDelete = async (path: string) => {
+    setDeleteTarget(null);
+    setDeletingPath(path);
+    try {
+      await deleteFile(sessionId, path);
+      setSimFiles((prev) => prev.filter((f) => f !== path));
+      // Keep archive list in sync if the panel is open
+      if (showArchive) refreshArchive();
+    } catch {
+      // silently ignore — file listing will be stale but not broken
+    } finally {
+      setDeletingPath(null);
+    }
+  };
+
+  const handleRestore = async (path: string) => {
+    setRestoringPath(path);
+    try {
+      await restoreFile(sessionId, path);
+      setArchiveFiles((prev) => prev.filter((f) => f !== path));
+      refreshFiles();
+    } catch {
+      // silently ignore
+    } finally {
+      setRestoringPath(null);
+    }
+  };
 
   return (
     <div className="p-4 space-y-4">
@@ -320,6 +517,13 @@ function ProgressTab({ sessionId }: { sessionId: string }) {
         action={
           <div className="flex items-center gap-2">
             <button
+              onClick={() => setShowArchive((v) => !v)}
+              className={`p-1 transition-colors ${showArchive ? "text-amber-400 hover:text-amber-300" : "text-gray-500 hover:text-gray-300"}`}
+              title="Show archived files"
+            >
+              <Archive size={15} />
+            </button>
+            <button
               onClick={refreshFiles}
               className="p-1 text-gray-500 hover:text-gray-300 transition-colors"
               title="Refresh"
@@ -329,8 +533,8 @@ function ProgressTab({ sessionId }: { sessionId: string }) {
             <a
               href={downloadZipUrl(sessionId)}
               download
-              className="flex items-center gap-1 p-1 text-gray-500 hover:text-gray-300 transition-colors"
-              title="Download ZIP"
+              className="p-1 text-gray-500 hover:text-gray-300 transition-colors"
+              title="Download all as ZIP"
             >
               <Download size={15} />
             </a>
@@ -340,26 +544,136 @@ function ProgressTab({ sessionId }: { sessionId: string }) {
         {simFiles.length === 0 ? (
           <p className="text-xs text-gray-600 py-1">No simulation files yet.</p>
         ) : (
-          <div className="space-y-1 max-h-40 overflow-y-auto">
+          <div className="space-y-0.5 max-h-56 overflow-y-auto">
             {simFiles.map((f) => {
               const name = f.split("/").pop() ?? f;
+              const isDeleting = deletingPath === f;
               return (
-                <a
+                <div
                   key={f}
-                  href={downloadUrl(sessionId, f)}
-                  download={name}
-                  className="flex items-center gap-2 px-2 py-1 rounded hover:bg-gray-800 transition-colors group"
+                  className="flex items-center gap-1 px-2 py-1.5 rounded hover:bg-gray-800/60 group"
                 >
-                  <span className="text-gray-600 text-xs group-hover:text-gray-400 font-mono">{name}</span>
-                </a>
+                  {/* Filename — click to preview */}
+                  <button
+                    onClick={() => setPreviewPath(f)}
+                    className="flex-1 text-left text-xs font-mono text-gray-400 hover:text-gray-200 truncate transition-colors"
+                    title={name}
+                  >
+                    {name}
+                  </button>
+
+                  {/* Action buttons — visible on hover */}
+                  <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                    <button
+                      onClick={() => setPreviewPath(f)}
+                      title="Preview"
+                      className="p-1 rounded text-gray-500 hover:text-gray-200 hover:bg-gray-700 transition-colors"
+                    >
+                      <Eye size={12} />
+                    </button>
+                    <a
+                      href={downloadUrl(sessionId, f)}
+                      download={name}
+                      title="Download"
+                      className="p-1 rounded text-gray-500 hover:text-gray-200 hover:bg-gray-700 transition-colors"
+                    >
+                      <Download size={12} />
+                    </a>
+                    <button
+                      onClick={() => setDeleteTarget(f)}
+                      disabled={isDeleting}
+                      title="Move to archive"
+                      className="p-1 rounded text-gray-500 hover:text-red-400 hover:bg-gray-700 transition-colors disabled:opacity-40"
+                    >
+                      {isDeleting ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                    </button>
+                  </div>
+                </div>
               );
             })}
+          </div>
+        )}
+
+        {/* Archive panel */}
+        {showArchive && (
+          <div className="mt-2 pt-3 border-t border-gray-700/40">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-1.5">
+                <Archive size={11} className="text-amber-500" />
+                <span className="text-[10px] font-semibold text-amber-500/80 uppercase tracking-wider">
+                  Archive{archiveFiles.length > 0 ? ` (${archiveFiles.length})` : ""}
+                </span>
+              </div>
+              <button
+                onClick={refreshArchive}
+                className="p-0.5 text-gray-600 hover:text-gray-400 transition-colors"
+                title="Refresh archive"
+              >
+                <RefreshCw size={11} className={archiveLoading ? "animate-spin" : ""} />
+              </button>
+            </div>
+
+            {archiveLoading ? (
+              <div className="flex justify-center py-2">
+                <Loader2 size={14} className="animate-spin text-gray-600" />
+              </div>
+            ) : archiveFiles.length === 0 ? (
+              <p className="text-xs text-gray-600 py-1">Archive is empty.</p>
+            ) : (
+              <div className="space-y-0.5 max-h-40 overflow-y-auto">
+                {archiveFiles.map((f) => {
+                  const name = f.split("/").pop() ?? f;
+                  const isRestoring = restoringPath === f;
+                  return (
+                    <div
+                      key={f}
+                      className="flex items-center gap-1 px-2 py-1.5 rounded hover:bg-gray-800/60 group"
+                    >
+                      <span
+                        className="flex-1 text-xs font-mono text-gray-500 truncate"
+                        title={name}
+                      >
+                        {name}
+                      </span>
+                      <button
+                        onClick={() => handleRestore(f)}
+                        disabled={isRestoring}
+                        title="Restore to working directory"
+                        className="p-1 rounded text-gray-600 hover:text-emerald-400 hover:bg-gray-700 transition-colors disabled:opacity-40 opacity-0 group-hover:opacity-100"
+                      >
+                        {isRestoring ? (
+                          <Loader2 size={12} className="animate-spin" />
+                        ) : (
+                          <RotateCcw size={12} />
+                        )}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
       </Section>
 
       {agentOpen && (
         <AgentModal sessionId={sessionId} agentType="analysis" onClose={() => setAgentOpen(false)} />
+      )}
+
+      {previewPath && (
+        <FilePreviewModal
+          sessionId={sessionId}
+          path={previewPath}
+          onClose={() => setPreviewPath(null)}
+        />
+      )}
+
+      {deleteTarget && (
+        <DeleteConfirmPopup
+          name={deleteTarget.split("/").pop() ?? deleteTarget}
+          onConfirm={() => handleDelete(deleteTarget)}
+          onCancel={() => setDeleteTarget(null)}
+        />
       )}
     </div>
   );
@@ -451,7 +765,7 @@ function MoleculeTab({
           className="flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs bg-blue-900/30 border border-blue-800/50 text-blue-400 hover:bg-blue-800/40 transition-colors font-medium"
         >
           <Bot size={11} />
-          Extract from Paper
+          Search with agent
         </button>
       </div>
 
@@ -594,7 +908,19 @@ function GromacsTab({
               { value: "tip3p", label: "TIP3P Water" },
             ]}
           />
+          <Field
+            label="Box clearance"
+            type="number"
+            value={String(gromacs.box_clearance ?? "1.5")}
+            onChange={(v) => onChange("gromacs.box_clearance", Number(v))}
+            onBlur={onSave}
+            unit="nm"
+          />
         </FieldGrid>
+        <p className="text-[11px] text-gray-600">
+          Minimum distance from the molecule to the box edge (editconf <code className="font-mono">-d</code>).
+          Must satisfy: clearance × √3/2 &gt; max cutoff ({String((gromacs.rcoulomb as number | undefined) ?? 1.2)} nm).
+        </p>
       </Section>
 
       {/* Simulation length */}
@@ -665,28 +991,240 @@ function GromacsTab({
         </FieldGrid>
       </Section>
 
-      {/* Non-bonded cutoffs */}
-      <Section icon={<Gauge size={13} />} title="Non-bonded Cutoffs" accent="indigo">
-        <FieldGrid>
-          <Field
-            label="Coulomb cutoff"
-            type="number"
-            value={String(gromacs.rcoulomb ?? "1.0")}
-            onChange={(v) => onChange("gromacs.rcoulomb", Number(v))}
-            onBlur={onSave}
-            unit="nm"
-          />
-          <Field
-            label="VdW cutoff"
-            type="number"
-            value={String(gromacs.rvdw ?? "1.0")}
-            onChange={(v) => onChange("gromacs.rvdw", Number(v))}
-            onBlur={onSave}
-            unit="nm"
-          />
-        </FieldGrid>
-        <p className="text-[11px] text-gray-600">Typically match Coulomb and VdW cutoffs.</p>
-      </Section>
+      {/* Advanced / details — folded by default */}
+      <AdvancedSection cfg={cfg} onChange={onChange} onSave={onSave} />
+    </div>
+  );
+}
+
+function AdvancedSection({
+  cfg,
+  onChange,
+  onSave,
+}: {
+  cfg: Record<string, unknown>;
+  onChange: (k: string, v: unknown) => void;
+  onSave: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const gromacs = (cfg.gromacs ?? {}) as Record<string, unknown>;
+
+  return (
+    <div className="rounded-xl border border-gray-700/40 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-3 py-2 bg-gray-900/60 hover:bg-gray-800/60 transition-colors text-left"
+      >
+        <div className="flex items-center gap-2">
+          {open ? <ChevronDown size={12} className="text-gray-500" /> : <ChevronRight size={12} className="text-gray-500" />}
+          <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Advanced Parameters</span>
+        </div>
+        <span className="text-[10px] text-gray-600">Cutoffs, electrostatics, constraints, output…</span>
+      </button>
+
+      {open && (
+        <div className="p-3 space-y-3 border-t border-gray-700/40 bg-gray-900/20">
+          {/* Non-bonded cutoffs */}
+          <div>
+            <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Non-bonded Cutoffs</p>
+            <FieldGrid>
+              <Field
+                label="Coulomb cutoff"
+                type="number"
+                value={String(gromacs.rcoulomb ?? "1.2")}
+                onChange={(v) => onChange("gromacs.rcoulomb", Number(v))}
+                onBlur={onSave}
+                unit="nm"
+              />
+              <Field
+                label="VdW cutoff"
+                type="number"
+                value={String(gromacs.rvdw ?? "1.2")}
+                onChange={(v) => onChange("gromacs.rvdw", Number(v))}
+                onBlur={onSave}
+                unit="nm"
+              />
+            </FieldGrid>
+          </div>
+
+          {/* Electrostatics */}
+          <div>
+            <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Electrostatics</p>
+            <FieldGrid>
+              <SelectField
+                label="Coulomb type"
+                value={String(gromacs.coulombtype ?? "PME")}
+                onChange={(v) => onChange("gromacs.coulombtype", v)}
+                onSave={onSave}
+                options={[
+                  { value: "PME",     label: "PME"     },
+                  { value: "cutoff",  label: "Cutoff"  },
+                  { value: "Ewald",   label: "Ewald"   },
+                ]}
+              />
+              <Field
+                label="PME order"
+                type="number"
+                value={String(gromacs.pme_order ?? "4")}
+                onChange={(v) => onChange("gromacs.pme_order", Number(v))}
+                onBlur={onSave}
+              />
+              <Field
+                label="Fourier spacing"
+                type="number"
+                value={String(gromacs.fourierspacing ?? "0.16")}
+                onChange={(v) => onChange("gromacs.fourierspacing", Number(v))}
+                onBlur={onSave}
+                unit="nm"
+              />
+            </FieldGrid>
+          </div>
+
+          {/* Neighbor list */}
+          <div>
+            <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Neighbor List</p>
+            <FieldGrid>
+              <SelectField
+                label="Cutoff scheme"
+                value={String(gromacs.cutoff_scheme ?? "Verlet")}
+                onChange={(v) => onChange("gromacs.cutoff_scheme", v)}
+                onSave={onSave}
+                options={[
+                  { value: "Verlet", label: "Verlet" },
+                  { value: "group",  label: "Group"  },
+                ]}
+              />
+              <Field
+                label="nstlist"
+                type="number"
+                value={String(gromacs.nstlist ?? "10")}
+                onChange={(v) => onChange("gromacs.nstlist", Number(v))}
+                onBlur={onSave}
+                hint="Steps between neighbor list updates."
+              />
+            </FieldGrid>
+          </div>
+
+          {/* Constraints */}
+          <div>
+            <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Constraints</p>
+            <FieldGrid>
+              <SelectField
+                label="Constraints"
+                value={String(gromacs.constraints ?? "h-bonds")}
+                onChange={(v) => onChange("gromacs.constraints", v)}
+                onSave={onSave}
+                options={[
+                  { value: "h-bonds",  label: "H-bonds"  },
+                  { value: "all-bonds", label: "All bonds" },
+                  { value: "none",     label: "None"     },
+                ]}
+              />
+              <SelectField
+                label="Algorithm"
+                value={String(gromacs.constraint_algorithm ?? "LINCS")}
+                onChange={(v) => onChange("gromacs.constraint_algorithm", v)}
+                onSave={onSave}
+                options={[
+                  { value: "LINCS",  label: "LINCS"  },
+                  { value: "SHAKE",  label: "SHAKE"  },
+                ]}
+              />
+            </FieldGrid>
+          </div>
+
+          {/* Output frequencies */}
+          <div>
+            <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Output Frequencies (steps)</p>
+            <FieldGrid>
+              <Field
+                label="nstxout"
+                type="number"
+                value={String(gromacs.nstxout ?? "5000")}
+                onChange={(v) => onChange("gromacs.nstxout", Number(v))}
+                onBlur={onSave}
+                hint="Coordinates to .trr"
+              />
+              <Field
+                label="nstvout"
+                type="number"
+                value={String(gromacs.nstvout ?? "5000")}
+                onChange={(v) => onChange("gromacs.nstvout", Number(v))}
+                onBlur={onSave}
+                hint="Velocities to .trr"
+              />
+              <Field
+                label="nstfout"
+                type="number"
+                value={String(gromacs.nstfout ?? "0")}
+                onChange={(v) => onChange("gromacs.nstfout", Number(v))}
+                onBlur={onSave}
+                hint="Forces to .trr (0 = off)"
+              />
+              <Field
+                label="nstlog"
+                type="number"
+                value={String(gromacs.nstlog ?? "1000")}
+                onChange={(v) => onChange("gromacs.nstlog", Number(v))}
+                onBlur={onSave}
+                hint="Energy to .log"
+              />
+              <Field
+                label="nstxout-compressed"
+                type="number"
+                value={String(gromacs.nstxout_compressed ?? "5000")}
+                onChange={(v) => onChange("gromacs.nstxout_compressed", Number(v))}
+                onBlur={onSave}
+                hint="Coordinates to .xtc"
+              />
+              <Field
+                label="nstenergy"
+                type="number"
+                value={String(gromacs.nstenergy ?? "1000")}
+                onChange={(v) => onChange("gromacs.nstenergy", Number(v))}
+                onBlur={onSave}
+                hint="Energy to .edr"
+              />
+            </FieldGrid>
+          </div>
+
+          {/* Pressure */}
+          <div>
+            <p className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Pressure Coupling</p>
+            <FieldGrid>
+              <SelectField
+                label="Barostat"
+                value={String(gromacs.pcoupl ?? "no")}
+                onChange={(v) => onChange("gromacs.pcoupl", v)}
+                onSave={onSave}
+                options={[
+                  { value: "no",                label: "None"               },
+                  { value: "Parrinello-Rahman",  label: "Parrinello-Rahman"  },
+                  { value: "Berendsen",          label: "Berendsen"          },
+                  { value: "C-rescale",          label: "C-rescale"          },
+                ]}
+              />
+              <Field
+                label="Reference pressure"
+                type="number"
+                value={String(gromacs.ref_p ?? gromacs.pressure ?? "1.0")}
+                onChange={(v) => onChange("gromacs.ref_p", Number(v))}
+                onBlur={onSave}
+                unit="bar"
+              />
+              <Field
+                label="τ pressure"
+                type="number"
+                value={String(gromacs.tau_p ?? "2.0")}
+                onChange={(v) => onChange("gromacs.tau_p", Number(v))}
+                onBlur={onSave}
+                unit="ps"
+              />
+            </FieldGrid>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

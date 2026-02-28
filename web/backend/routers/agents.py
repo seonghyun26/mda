@@ -46,7 +46,7 @@ async def run_agent(session_id: str, agent_type: str, input: str = ""):
         try:
             if agent_type == "paper":
                 from md_agent.agents.paper_agent import PaperConfigAgent
-                agent = PaperConfigAgent()
+                agent = PaperConfigAgent(work_dir=work_dir, session=session)
                 async for ev in agent.astream(input or "Please find and extract MD settings from a relevant paper."):
                     yield _fmt(ev)
 
@@ -58,7 +58,7 @@ async def run_agent(session_id: str, agent_type: str, input: str = ""):
 
             elif agent_type == "cv":
                 from md_agent.agents.cv_agent import CVAgent
-                agent = CVAgent(work_dir)
+                agent = CVAgent(work_dir, session=session)
                 async for ev in agent.astream(input or "Read the structure and suggest appropriate CVs for metadynamics."):
                     yield _fmt(ev)
 

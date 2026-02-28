@@ -89,8 +89,14 @@ async def create_session_endpoint(req: CreateSessionRequest):
     # Resolve config from preset; individual fields override if provided
     cfg_defaults = PRESET_CONFIGS.get(req.preset, PRESET_CONFIGS["undefined"])
     method     = req.method     or cfg_defaults["method"]
-    gromacs    = req.gromacs    or cfg_defaults["gromacs"]
     plumed_cvs = req.plumed_cvs or cfg_defaults["plumed_cvs"]
+    # "auto" and "blank" both map to the maximally-compatible "default" GROMACS config
+    _HYDRA_GROMACS_MAP: dict[str, str] = {
+        "auto":  "default",
+        "blank": "default",
+    }
+    gromacs_raw = req.gromacs or cfg_defaults["gromacs"]
+    gromacs = _HYDRA_GROMACS_MAP.get(gromacs_raw, gromacs_raw)
     # molecule_system is the UI selector (used for file seeding only)
     # hydra_system must be a valid conf/system/*.yaml name
     molecule_system = req.system  # e.g. "ala_dipeptide", "chignolin", "blank"

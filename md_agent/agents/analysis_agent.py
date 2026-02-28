@@ -24,7 +24,9 @@ def _make_tools(work_dir: str):
     # ── helpers ─────────────────────────────────────────────────────────
 
     def _safe_read(rel_path: str, max_lines: int = 5000) -> str:
-        p = wd / rel_path
+        p = (wd / rel_path).resolve()
+        if not str(p).startswith(str(wd.resolve())):
+            return "Error: path is outside the session directory."
         if not p.exists():
             return f"File not found: {rel_path}"
         lines = p.read_text(errors="replace").splitlines()
