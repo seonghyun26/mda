@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from importlib.util import find_spec
 from pathlib import Path
 
+from md_agent.utils.parsers import parse_gromacs_log_progress
+
 
 def _repo_conf_dir() -> str:
     """Return the conf/ directory, whether running from the repo or installed."""
@@ -115,20 +117,142 @@ def stop_session_simulation(session_id: str) -> bool:
     return False
 
 
-def get_simulation_status(session_id: str) -> dict:
-    """Return whether mdrun is currently running for this session."""
-    session = _sessions.get(session_id)
-    if not session:
-        return {"running": False}
+def _tail_text(path: Path, max_bytes: int = 64 * 1024) -> str:
+    """Read the tail of a text file without loading it fully into memory."""
     try:
-        runner = getattr(session.agent, "_gmx", None)
-        if runner is not None:
-            proc = getattr(runner, "_mdrun_proc", None)
-            if proc is not None and proc.poll() is None:
-                return {"running": True, "pid": proc.pid}
+        with path.open("rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            fh.seek(max(0, size - max_bytes))
+            return fh.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def infer_run_status_from_disk(session_root: Path, work_dir: Path) -> str | None:
+    """Infer finished/failed from md.log and config when session is not in memory.
+    Returns 'finished', 'failed', or None if unknown. Used when listing sessions."""
+    try:
+        cfg_path = session_root / "config.yaml"
+        expected_nsteps = None
+        if cfg_path.exists():
+            from omegaconf import OmegaConf
+            cfg = OmegaConf.load(cfg_path)
+            n = OmegaConf.select(cfg, "method.nsteps")
+            if n is not None:
+                expected_nsteps = int(n)
     except Exception:
         pass
-    return {"running": False}
+    log_candidates = [
+        work_dir / "simulation" / "md.log",
+        work_dir / "md.log",
+    ]
+    for log_path in log_candidates:
+        if not log_path.exists():
+            continue
+        tail = _tail_text(log_path).lower()
+        if "fatal error" in tail or "segmentation fault" in tail:
+            return "failed"
+        info = parse_gromacs_log_progress(str(log_path))
+        if expected_nsteps is not None and info and int(info.get("step", 0)) >= expected_nsteps:
+            return "finished"
+    return None
+
+
+def _infer_terminal_status_from_outputs(session: Session) -> dict | None:
+    """Infer terminal simulation status from output files/log markers."""
+    work_dir = Path(session.work_dir)
+    sim_meta = session.sim_status or {}
+    started_at = float(sim_meta.get("started_at") or 0.0)
+    output_prefix = str(sim_meta.get("output_prefix") or "simulation/md")
+    expected_nsteps_raw = sim_meta.get("expected_nsteps")
+    try:
+        expected_nsteps = int(expected_nsteps_raw) if expected_nsteps_raw is not None else None
+    except Exception:
+        expected_nsteps = None
+
+    log_candidates = [
+        work_dir / f"{output_prefix}.log",
+        work_dir / "simulation" / "md.log",
+        work_dir / "md.log",
+    ]
+
+    for log_path in log_candidates:
+        if not log_path.exists():
+            continue
+        try:
+            if started_at > 0 and log_path.stat().st_mtime < started_at:
+                continue
+        except Exception:
+            pass
+
+        tail = _tail_text(log_path).lower()
+        if "fatal error" in tail or "segmentation fault" in tail:
+            return {"status": "failed", "detected_by": "log_error"}
+
+        info = parse_gromacs_log_progress(str(log_path))
+        if expected_nsteps is not None and info and int(info.get("step", 0)) >= expected_nsteps:
+            return {"status": "finished", "detected_by": "step_reached"}
+
+    return None
+
+
+def get_simulation_status(session_id: str) -> dict:
+    """Return current mdrun lifecycle status for this session."""
+    session = _sessions.get(session_id)
+    if not session:
+        return {"running": False, "status": "idle"}
+    try:
+        runner = getattr(session.agent, "_gmx", None)
+        cfg = getattr(session.agent, "cfg", None)
+        if session.sim_status is None:
+            session.sim_status = {}
+        if "expected_nsteps" not in session.sim_status:
+            try:
+                from omegaconf import OmegaConf
+                nsteps = OmegaConf.select(cfg, "method.nsteps")
+                if nsteps is not None:
+                    session.sim_status["expected_nsteps"] = int(nsteps)
+            except Exception:
+                pass
+        if runner is not None:
+            proc = getattr(runner, "_mdrun_proc", None)
+            inferred = _infer_terminal_status_from_outputs(session)
+            # Terminal state is defined by file-derived step progress (or fatal log errors),
+            # not by subprocess lifecycle.
+            if inferred and inferred["status"] in {"finished", "failed"}:
+                try:
+                    runner._cleanup()
+                except Exception:
+                    pass
+                try:
+                    runner._mdrun_proc = None
+                except Exception:
+                    pass
+                status = {"running": False, **inferred}
+                if proc is not None:
+                    status["pid"] = proc.pid
+                return status
+            if proc is None:
+                return {"running": False, "status": "idle"}
+            rc = proc.poll()
+            if rc is None:
+                return {"running": True, "status": "running", "pid": proc.pid}
+            try:
+                runner._mdrun_proc = None
+            except Exception:
+                pass
+            # If process exited before step-based completion:
+            # rc=0 → treat as finished (clean exit), rc!=0 → failed.
+            return {
+                "running": False,
+                "status": "finished" if rc == 0 else "failed",
+                "pid": proc.pid,
+                "exit_code": rc,
+            }
+    except Exception:
+        pass
+    return {"running": False, "status": "idle"}
 
 
 def restore_session(
@@ -137,16 +261,33 @@ def restore_session(
     nickname: str = "",
     username: str = "",
 ) -> Session:
-    """Return existing in-memory session, or reconstruct it from config.yaml on disk."""
+    """Return existing in-memory session, or reconstruct it from session-root config.yaml."""
     if session_id in _sessions:
         return _sessions[session_id]
 
     from md_agent.agent import MDAgent
 
-    cfg_path = Path(work_dir) / "config.yaml"
+    session_root = Path(work_dir).parent
+    cfg_path = session_root / "config.yaml"
+    legacy_cfg_path = Path(work_dir) / "config.yaml"
     if cfg_path.exists():
         from omegaconf import OmegaConf
         cfg = OmegaConf.load(cfg_path)
+        # Cleanup leftover legacy location if root config already exists.
+        if legacy_cfg_path.exists():
+            try:
+                legacy_cfg_path.unlink()
+            except Exception:
+                pass
+    elif legacy_cfg_path.exists():
+        from omegaconf import OmegaConf
+        cfg = OmegaConf.load(legacy_cfg_path)
+        # Migrate legacy location (<session>/data/config.yaml) to session root.
+        OmegaConf.save(cfg, cfg_path)
+        try:
+            legacy_cfg_path.unlink()
+        except Exception:
+            pass
     else:
         cfg = _load_hydra_cfg([], work_dir)
 
@@ -158,3 +299,37 @@ def restore_session(
 
 def delete_session(session_id: str) -> bool:
     return _sessions.pop(session_id, None) is not None
+
+
+def get_or_restore_session(session_id: str) -> "Session | None":
+    """Return in-memory session, or restore from session.json on disk."""
+    session = _sessions.get(session_id)
+    if session:
+        return session
+
+    repo_outputs = Path(__file__).parents[3] / "outputs"
+    scan_roots = [Path("outputs"), repo_outputs]
+    seen: set[Path] = set()
+    for root in scan_roots:
+        root = root.resolve()
+        if root in seen or not root.is_dir():
+            continue
+        seen.add(root)
+        for sf in root.rglob("session.json"):
+            try:
+                import json as _json
+                data = _json.loads(sf.read_text())
+                if data.get("session_id") != session_id:
+                    continue
+                work_dir = data.get("work_dir")
+                if not work_dir:
+                    continue
+                return restore_session(
+                    session_id=session_id,
+                    work_dir=work_dir,
+                    nickname=data.get("nickname", ""),
+                    username=data.get("username", ""),
+                )
+            except Exception:
+                continue
+    return None

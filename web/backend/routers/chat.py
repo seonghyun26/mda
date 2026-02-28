@@ -90,16 +90,27 @@ async def create_session_endpoint(req: CreateSessionRequest):
     cfg_defaults = PRESET_CONFIGS.get(req.preset, PRESET_CONFIGS["undefined"])
     method     = req.method     or cfg_defaults["method"]
     plumed_cvs = req.plumed_cvs or cfg_defaults["plumed_cvs"]
-    # "auto" and "blank" both map to the maximally-compatible "default" GROMACS config
-    _HYDRA_GROMACS_MAP: dict[str, str] = {
-        "auto":  "default",
-        "blank": "default",
-    }
-    gromacs_raw = req.gromacs or cfg_defaults["gromacs"]
-    gromacs = _HYDRA_GROMACS_MAP.get(gromacs_raw, gromacs_raw)
     # molecule_system is the UI selector (used for file seeding only)
-    # hydra_system must be a valid conf/system/*.yaml name
     molecule_system = req.system  # e.g. "ala_dipeptide", "chignolin", "blank"
+
+    # Map UI template ids to Hydra config group names (conf/gromacs/*.yaml).
+    # UI sends "auto" or "vacuum"; preset default is "default".
+    _HYDRA_GROMACS_MAP: dict[str, str] = {
+        "auto":    "default",
+        "default": "default",
+        "vacuum":  "vacuum",
+    }
+    gromacs_raw = (req.gromacs or cfg_defaults["gromacs"] or "").strip()
+    gromacs = _HYDRA_GROMACS_MAP.get(gromacs_raw.lower(), gromacs_raw)
+
+    # Vacuum config has no solvent — ensure water_model is not inherited from
+    # the system config (e.g. protein.yaml has water_model: tip3p).
+    _VACUUM_CONFIGS = {"vacuum"}
+    extra_overrides = list(req.extra_overrides)
+    if gromacs in _VACUUM_CONFIGS:
+        extra_overrides = [o for o in extra_overrides if not o.startswith("system.water_model")] + ["system.water_model=none"]
+
+    # hydra_system must be a valid conf/system/*.yaml name
     _HYDRA_SYSTEM_MAP: dict[str, str] = {
         "ala_dipeptide": "ala_dipeptide",
         "chignolin":     "protein",
@@ -115,17 +126,30 @@ async def create_session_endpoint(req: CreateSessionRequest):
         system=hydra_system,
         gromacs=gromacs,
         plumed_cvs=plumed_cvs,
-        extra_overrides=req.extra_overrides,
+        extra_overrides=extra_overrides,
     )
 
     seeded = _seed_files(req.work_dir, req.preset, molecule_system, req.state)
 
-    # Write initial config.yaml to work_dir so the user can inspect/edit it
+    # If a structure file was seeded, update system.coordinates so the UI
+    # can auto-load the correct molecule on session open.
+    _STRUCT_EXTS = {".pdb", ".gro", ".mol2", ".xyz"}
+    seeded_struct = next(
+        (f for f in seeded if Path(f).suffix.lower() in _STRUCT_EXTS), None
+    )
+    if seeded_struct:
+        try:
+            from omegaconf import OmegaConf as _OC
+            _OC.update(session.agent.cfg, "system.coordinates", seeded_struct, merge=True)
+        except Exception:
+            pass
+
+    # Write initial config.yaml to session root (sibling of data/) so it is
+    # shared metadata for the whole session.
     try:
         from omegaconf import OmegaConf
-        cfg_path = Path(req.work_dir) / "config.yaml"
+        cfg_path = Path(req.work_dir).parent / "config.yaml"
         OmegaConf.save(session.agent.cfg, cfg_path)
-        seeded.append("config.yaml")
     except Exception:
         pass
 
@@ -136,6 +160,7 @@ async def create_session_endpoint(req: CreateSessionRequest):
         "nickname": session.nickname,
         "work_dir": session.work_dir,
         "status": "active",
+        "run_status": "idle",
         "updated_at": datetime.utcnow().isoformat(),
     }
     (Path(req.work_dir).parent / "session.json").write_text(json.dumps(meta, indent=2))
@@ -159,21 +184,35 @@ async def list_sessions_endpoint(username: str = ""):
         scan_root = outputs_root
         glob_pattern = "*/*/session.json"
 
+    from web.backend.session_manager import infer_run_status_from_disk
+
     sessions = []
     if scan_root.is_dir():
         for sf in scan_root.glob(glob_pattern):
             try:
                 data = json.loads(sf.read_text())
-                if "session_id" in data and "work_dir" in data:
-                    if data.get("status") == "inactive":
-                        continue
-                    sessions.append({
-                        "session_id": data["session_id"],
-                        "work_dir": data["work_dir"],
-                        "nickname": data.get("nickname", ""),
-                        "selected_molecule": data.get("selected_molecule", ""),
-                        "updated_at": data.get("updated_at", ""),
-                    })
+                if "session_id" not in data or "work_dir" not in data:
+                    continue
+                if data.get("status") == "inactive":
+                    continue
+                run_status = data.get("run_status", "idle")
+                # If session.json says "running", infer actual status from md.log (e.g. after refresh)
+                if run_status == "running":
+                    work_dir_resolved = Path(data["work_dir"]).resolve()
+                    session_root = work_dir_resolved.parent
+                    inferred = infer_run_status_from_disk(session_root, work_dir_resolved)
+                    if inferred in ("finished", "failed"):
+                        run_status = inferred
+                        data["run_status"] = inferred
+                        sf.write_text(json.dumps(data, indent=2))
+                sessions.append({
+                    "session_id": data["session_id"],
+                    "work_dir": data["work_dir"],
+                    "nickname": data.get("nickname", ""),
+                    "selected_molecule": data.get("selected_molecule", ""),
+                    "updated_at": data.get("updated_at", ""),
+                    "run_status": run_status,
+                })
             except Exception:
                 continue
 
@@ -196,15 +235,16 @@ async def update_selected_molecule(session_id: str, req: MoleculeSelectRequest):
     for sf in Path("outputs").glob("*/*/session.json"):
         try:
             data = json.loads(sf.read_text())
-            if data.get("session_id") == session_id:
-                data.update({
-                    "selected_molecule": req.selected_molecule,
-                    "updated_at": datetime.utcnow().isoformat(),
-                })
-                sf.write_text(json.dumps(data, indent=2))
-                break
+            if data.get("session_id") != session_id:
+                continue
+            data.update({
+                "selected_molecule": req.selected_molecule,
+                "updated_at": datetime.utcnow().isoformat(),
+            })
+            sf.write_text(json.dumps(data, indent=2))
+            break
         except Exception:
-            pass
+            continue
     return {"session_id": session_id, "selected_molecule": req.selected_molecule}
 
 
@@ -220,12 +260,13 @@ async def update_nickname(session_id: str, req: NicknameRequest):
     for sf in Path("outputs").glob("*/*/session.json"):
         try:
             data = json.loads(sf.read_text())
-            if data.get("session_id") == session_id:
-                data.update({"nickname": nickname, "updated_at": datetime.utcnow().isoformat()})
-                sf.write_text(json.dumps(data, indent=2))
-                break
+            if data.get("session_id") != session_id:
+                continue
+            data.update({"nickname": nickname, "updated_at": datetime.utcnow().isoformat()})
+            sf.write_text(json.dumps(data, indent=2))
+            break
         except Exception:
-            pass
+            continue
     return {"session_id": session_id, "nickname": nickname}
 
 
@@ -254,15 +295,16 @@ async def delete_session_endpoint(session_id: str):
     for sf in Path("outputs").glob("*/*/session.json"):
         try:
             data = json.loads(sf.read_text())
-            if data.get("session_id") == session_id:
-                data.update({
-                    "status": "inactive",
-                    "updated_at": datetime.utcnow().isoformat(),
-                })
-                sf.write_text(json.dumps(data, indent=2))
-                break
+            if data.get("session_id") != session_id:
+                continue
+            data.update({
+                "status": "inactive",
+                "updated_at": datetime.utcnow().isoformat(),
+            })
+            sf.write_text(json.dumps(data, indent=2))
+            break
         except Exception:
-            pass
+            continue
 
     delete_session(session_id)
     return {"deleted": session_id, "simulation_stopped": stopped}
@@ -308,7 +350,7 @@ async def stream_chat(session_id: str, message: str):
 
         async def poll_progress():
             log_path = str(Path(session.work_dir) / "md.log")
-            total_steps = session.sim_status.get("total_steps", 1)
+            total_steps = session.sim_status.get("expected_nsteps") or session.sim_status.get("total_steps") or 1
             while True:
                 await asyncio.sleep(10)
                 info = get_log_progress(log_path)

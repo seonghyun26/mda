@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import shutil
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -13,6 +15,21 @@ from web.backend.session_manager import get_session
 router = APIRouter()
 
 _COORD_EXTS = {".gro", ".pdb"}
+
+
+def _persist_run_status(session: object, status: str) -> None:
+    """Write run_status to the session-root session.json so the sidebar can show it."""
+    try:
+        work = Path(session.work_dir).resolve()  # type: ignore[attr-defined]
+        session_root = work.parent if work.name == "data" else work
+        meta_path = session_root / "session.json"
+        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        if meta.get("run_status") == status:
+            return
+        meta["run_status"] = status
+        meta_path.write_text(json.dumps(meta, indent=2))
+    except Exception:
+        pass
 _TOP_EXTS = {".top"}
 
 # Subfolder within work_dir where mdrun writes its output files
@@ -22,17 +39,19 @@ _ARCHIVE_SUBDIR = "archive"
 
 
 def _archive_existing(work_dir: Path, *patterns: str) -> None:
-    """Move files matching glob patterns into work_dir/archive/.
+    """Archiving disabled by request."""
+    return None
 
-    Called before every GROMACS command that would overwrite output files,
-    so GROMACS never creates its own #filename.bak# backups.
-    """
-    archive_dir = work_dir / _ARCHIVE_SUBDIR
-    for pattern in patterns:
-        for src in work_dir.glob(pattern):
-            if src.is_file():
-                archive_dir.mkdir(exist_ok=True)
-                shutil.move(str(src), str(archive_dir / src.name))
+
+def _remove_existing(work_dir: Path, *names: str) -> None:
+    """Best-effort cleanup of derived files to avoid stale reuse across runs."""
+    for name in names:
+        p = work_dir / name
+        if p.exists() and p.is_file():
+            try:
+                p.unlink()
+            except Exception:
+                pass
 
 
 def _find_file(work_dir: Path, extensions: set[str], preferred: str = "") -> str | None:
@@ -44,44 +63,54 @@ def _find_file(work_dir: Path, extensions: set[str], preferred: str = "") -> str
     return None
 
 
-def _gro_min_image_distance(gro_path: Path) -> float | None:
-    """Return an estimate of the minimum image distance (nm) from the GRO box vectors.
+def _is_derived_coord(name: str) -> bool:
+    n = (Path(name).name or "").lower()
+    return (
+        n.endswith("_system.gro")
+        or n.endswith("_box.gro")
+        or n.endswith("_solvated.gro")
+        or n.endswith("_ionized.gro")
+        or n in {"system.gro", "box.gro", "solvated.gro", "ionized.gro"}
+    )
 
-    For a cubic/rectangular box  : min(v1x, v2y, v3z)
-    For a dodecahedron (triclinic): v1x * sqrt(3) / 2  (good approximation)
-    Returns None if the file cannot be parsed.
-    """
-    try:
-        last = gro_path.read_text().rstrip().splitlines()[-1]
-        vals = [float(x) for x in last.split()]
-        if len(vals) == 3:
-            return min(vals)
-        if len(vals) == 9:
-            # Triclinic box — for a dodecahedron v1x == v2y == v3z
-            return vals[0] * (3 ** 0.5 / 2)
-    except Exception:
-        pass
+
+def _find_source_coord(work_dir: Path, preferred: str = "") -> str | None:
+    """Find the original user-provided coordinate file (exclude derived intermediates)."""
+    pref_name = Path(preferred).name if preferred else ""
+    if pref_name and (work_dir / pref_name).exists() and not _is_derived_coord(pref_name):
+        return pref_name
+    if pref_name and _is_derived_coord(pref_name):
+        # Recover the original source root from derived names like
+        # "<root>_system.gro", "<root>_box.gro", "<root>_solvated.gro", "<root>_ionized.gro".
+        n = pref_name
+        for suffix in ("_system.gro", "_box.gro", "_solvated.gro", "_ionized.gro"):
+            if n.lower().endswith(suffix):
+                root = n[: -len(suffix)]
+                # Prefer PDB as canonical source when both PDB/GRO exist.
+                for ext in (".pdb", ".gro"):
+                    cand = f"{root}{ext}"
+                    if (work_dir / cand).exists() and not _is_derived_coord(cand):
+                        return cand
+                break
+    for f in sorted(work_dir.iterdir()):
+        if not f.is_file():
+            continue
+        if f.suffix.lower() not in _COORD_EXTS:
+            continue
+        if _is_derived_coord(f.name):
+            continue
+        return f.name
     return None
 
 
-def _topology_has_molecules(top_path: Path) -> bool:
-    """Return True only if the topology file has a populated [ molecules ] section."""
-    try:
-        if top_path.stat().st_size == 0:
-            return False
-        in_mol_section = False
-        for line in top_path.read_text().splitlines():
-            s = line.strip()
-            if s.startswith("[") and "molecules" in s.lower():
-                in_mol_section = True
-                continue
-            if s.startswith("[") and in_mol_section:
-                break  # entered a new section — no molecules found
-            if in_mol_section and s and not s.startswith(";"):
-                return True  # found at least one non-comment molecule entry
-    except Exception:
-        pass
-    return False
+def _remove_matching(work_dir: Path, *patterns: str) -> None:
+    for pattern in patterns:
+        for p in work_dir.glob(pattern):
+            if p.is_file():
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
 
 
 @router.post("/sessions/{session_id}/simulate")
@@ -106,6 +135,8 @@ async def start_simulation(session_id: str):
     if not session:
         raise HTTPException(404, "Session not found")
 
+    _persist_run_status(session, "setting_up")
+
     work_dir = Path(session.work_dir)
     cfg = session.agent.cfg
     gmx = session.agent._gmx
@@ -120,141 +151,119 @@ async def start_simulation(session_id: str):
 
     # 2. Find the raw input coordinate file (the original PDB/GRO the user uploaded)
     preferred_coord = OmegaConf.select(cfg, "system.coordinates") or ""
-    # Exclude derived GROMACS outputs so _find_file picks the original input
-    _DERIVED = {"system.gro", "box.gro", "solvated.gro", "ionized.gro"}
-    input_coord = _find_file(
-        work_dir, _COORD_EXTS,
-        preferred_coord if preferred_coord not in _DERIVED else "",
-    )
+    # Exclude derived GROMACS outputs so preprocessing always starts from raw input.
+    input_coord = _find_source_coord(work_dir, preferred_coord)
     if not input_coord:
         raise HTTPException(400, "No coordinate file (.gro or .pdb) found in session directory.")
+    input_stem = Path(input_coord).stem
+    system_gro = f"{input_stem}_system.gro"
+    box_gro = f"{input_stem}_box.gro"
+    solvated_gro = f"{input_stem}_solvated.gro"
+    ionized_gro = f"{input_stem}_ionized.gro"
 
     # ── Step A: pdb2gmx ─────────────────────────────────────────────────
-    # Re-run whenever topol.top is missing or has no [ molecules ] entries.
-    preferred_top = OmegaConf.select(cfg, "system.topology") or ""
-    top_file = _find_file(work_dir, _TOP_EXTS, preferred_top)
+    # Always regenerate topology/processed coordinates from the selected raw input.
+    # This avoids stale topol.top vs *.gro mismatches when users switch solvent/model.
+    _archive_existing(work_dir, system_gro, "topol.top", "posre*.itp", "mdout.mdp")
+    _remove_existing(work_dir, system_gro, "topol.top", "mdout.mdp")
+    # Remove stale prefixed intermediates from prior runs with a different input file.
+    _remove_matching(work_dir, "*_system.gro", "*_box.gro", "*_solvated.gro", "*_ionized.gro")
 
-    if not top_file or not _topology_has_molecules(work_dir / top_file):
-        _archive_existing(work_dir, "system.gro", "topol.top", "posre*.itp", "mdout.mdp")
+    def _run_pdb2gmx(ff: str) -> dict:
+        return gmx.run_gmx_command(
+            "pdb2gmx",
+            ["-f", input_coord, "-o", system_gro, "-p", "topol.top",
+             "-ff", ff, "-water", water_model, "-ignh"],
+            work_dir=str(work_dir),
+        )
 
-        def _run_pdb2gmx(ff: str) -> dict:
-            return gmx.run_gmx_command(
-                "pdb2gmx",
-                ["-f", input_coord, "-o", "system.gro", "-p", "topol.top",
-                 "-ff", ff, "-water", water_model, "-ignh"],
-                work_dir=str(work_dir),
-            )
+    result = _run_pdb2gmx(forcefield)
 
-        result = _run_pdb2gmx(forcefield)
+    # Fall back to amber99sb-ildn if the chosen FF lacks the residue
+    if result["returncode"] != 0:
+        stderr = result.get("stderr", "")
+        if "not found in residue topology database" in stderr and forcefield != "amber99sb-ildn":
+            result = _run_pdb2gmx("amber99sb-ildn")
+            if result["returncode"] == 0:
+                from omegaconf import OmegaConf as _OC
+                _OC.update(cfg, "system.forcefield", "amber99sb-ildn", merge=True)
+                forcefield = "amber99sb-ildn"
 
-        # Fall back to amber99sb-ildn if the chosen FF lacks the residue
-        if result["returncode"] != 0:
-            stderr = result.get("stderr", "")
-            if "not found in residue topology database" in stderr and forcefield != "amber99sb-ildn":
-                result = _run_pdb2gmx("amber99sb-ildn")
-                if result["returncode"] == 0:
-                    from omegaconf import OmegaConf as _OC
-                    _OC.update(cfg, "system.forcefield", "amber99sb-ildn", merge=True)
-                    forcefield = "amber99sb-ildn"
-
-        if result["returncode"] != 0:
-            raise HTTPException(500, f"pdb2gmx failed:\n{result.get('stderr', '')[-2000:]}")
-        top_file = "topol.top"
-
-    rcoulomb    = float(OmegaConf.select(cfg, "gromacs.rcoulomb") or 1.2)
-    rvdw        = float(OmegaConf.select(cfg, "gromacs.rvdw")     or 1.2)
-    _max_cutoff = max(rcoulomb, rvdw)
-
-    def _box_too_small(gro_path: Path) -> bool:
-        """True if the GRO file's box is too small for the configured cutoffs."""
-        if not gro_path.exists():
-            return True
-        d = _gro_min_image_distance(gro_path)
-        return d is None or d / 2 < _max_cutoff
+    if result["returncode"] != 0:
+        raise HTTPException(500, f"pdb2gmx failed:\n{result.get('stderr', '')[-2000:]}")
+    top_file = "topol.top"
 
     # ── Step B: solvation + ionisation ─────────────────────────────────
-    # Canonical output: ionized.gro.  Re-run whenever it is absent OR whenever
-    # the existing box is too small for the configured cutoffs.
+    # Rebuild every run to keep coordinates/topology consistent after UI changes.
     if water_model != "none":
-        _ionized = work_dir / "ionized.gro"
-        if _ionized.exists() and _box_too_small(_ionized):
-            # Box too small — archive and rebuild
-            _archive_existing(work_dir, "ionized.gro", "solvated.gro", "box.gro", "ions.tpr")
-
-        if not _ionized.exists():
-            if not (work_dir / "system.gro").exists():
-                raise HTTPException(
-                    500,
-                    "system.gro not found — pdb2gmx must succeed before solvation.",
-                )
-
-            # B1. Add simulation box using configured clearance
-            _archive_existing(work_dir, "box.gro")
-            r = gmx.run_gmx_command(
-                "editconf",
-                ["-f", "system.gro", "-o", "box.gro",
-                 "-c", "-d", str(box_clearance), "-bt", "dodecahedron"],
-                work_dir=str(work_dir),
+        if not (work_dir / system_gro).exists():
+            raise HTTPException(
+                500,
+                f"{system_gro} not found — pdb2gmx must succeed before solvation.",
             )
-            if r["returncode"] != 0:
-                raise HTTPException(500, f"editconf failed:\n{r.get('stderr', '')[-2000:]}")
 
-            # B2. Fill with water
-            _archive_existing(work_dir, "solvated.gro")
-            r = gmx.run_gmx_command(
-                "solvate",
-                ["-cp", "box.gro", "-cs", "spc216.gro",
-                 "-o", "solvated.gro", "-p", "topol.top"],
-                work_dir=str(work_dir),
-            )
-            if r["returncode"] != 0:
-                raise HTTPException(500, f"solvate failed:\n{r.get('stderr', '')[-2000:]}")
+        _archive_existing(work_dir, ionized_gro, solvated_gro, box_gro, "ions.tpr")
+        _remove_existing(work_dir, ionized_gro, solvated_gro, box_gro, "ions.tpr", "mdout.mdp")
 
-            # B3. grompp → ions.tpr (net-charge warning expected; genion will fix it)
-            _archive_existing(work_dir, "ions.tpr", "mdout.mdp")
-            r = gmx.grompp(
-                mdp_file="md.mdp",
-                topology_file="topol.top",
-                coordinate_file="solvated.gro",
-                output_tpr="ions.tpr",
-                max_warnings=20,
-            )
-            if not r["success"]:
-                raise HTTPException(500, f"grompp (ions) failed:\n{r.get('stderr', '')[-2000:]}")
+        # B1. Add simulation box using configured clearance
+        r = gmx.run_gmx_command(
+            "editconf",
+            ["-f", system_gro, "-o", box_gro,
+             "-c", "-d", str(box_clearance), "-bt", "dodecahedron"],
+            work_dir=str(work_dir),
+        )
+        if r["returncode"] != 0:
+            raise HTTPException(500, f"editconf failed:\n{r.get('stderr', '')[-2000:]}")
 
-            # B4. Replace water molecules with Na+/Cl- to neutralise
-            _archive_existing(work_dir, "ionized.gro")
-            r = gmx.run_gmx_command(
-                "genion",
-                ["-s", "ions.tpr", "-o", "ionized.gro", "-p", "topol.top",
-                 "-pname", "NA", "-nname", "CL", "-neutral"],
-                stdin_text="SOL\n",
-                work_dir=str(work_dir),
-            )
-            if r["returncode"] != 0:
-                raise HTTPException(500, f"genion failed:\n{r.get('stderr', '')[-2000:]}")
+        # B2. Fill with water
+        r = gmx.run_gmx_command(
+            "solvate",
+            ["-cp", box_gro, "-cs", "spc216.gro",
+             "-o", solvated_gro, "-p", "topol.top"],
+            work_dir=str(work_dir),
+        )
+        if r["returncode"] != 0:
+            raise HTTPException(500, f"solvate failed:\n{r.get('stderr', '')[-2000:]}")
 
-        coord_file = "ionized.gro"
-        OmegaConf.update(cfg, "system.coordinates", "ionized.gro", merge=True)
+        # B3. grompp → ions.tpr (net-charge warning expected; genion will fix it)
+        r = gmx.grompp(
+            mdp_file="md.mdp",
+            topology_file="topol.top",
+            coordinate_file=solvated_gro,
+            output_tpr="ions.tpr",
+            max_warnings=20,
+        )
+        if not r["success"]:
+            raise HTTPException(500, f"grompp (ions) failed:\n{r.get('stderr', '')[-2000:]}")
+
+        # B4. Replace water molecules with Na+/Cl- to neutralise
+        r = gmx.run_gmx_command(
+            "genion",
+            ["-s", "ions.tpr", "-o", ionized_gro, "-p", "topol.top",
+             "-pname", "NA", "-nname", "CL", "-neutral"],
+            stdin_text="SOL\n",
+            work_dir=str(work_dir),
+        )
+        if r["returncode"] != 0:
+            raise HTTPException(500, f"genion failed:\n{r.get('stderr', '')[-2000:]}")
+
+        coord_file = ionized_gro
+        OmegaConf.update(cfg, "system.coordinates", ionized_gro, merge=True)
     else:
-        # Vacuum: run editconf to set a proper periodic box before grompp.
-        # pdb2gmx's default box is often too small for the configured cutoffs.
-        _vac_box = work_dir / "box.gro"
-        if _vac_box.exists() and _box_too_small(_vac_box):
-            _archive_existing(work_dir, "box.gro")
+        # Vacuum: always rebuild <input>_box.gro from freshly generated <input>_system.gro.
+        _archive_existing(work_dir, box_gro)
+        _remove_existing(work_dir, box_gro)
+        _src = system_gro if (work_dir / system_gro).exists() else input_coord
+        r = gmx.run_gmx_command(
+            "editconf",
+            ["-f", _src, "-o", box_gro,
+             "-c", "-d", str(box_clearance), "-bt", "cubic"],
+            work_dir=str(work_dir),
+        )
+        if r["returncode"] != 0:
+            raise HTTPException(500, f"editconf (vacuum) failed:\n{r.get('stderr', '')[-2000:]}")
 
-        if not _vac_box.exists():
-            _src = "system.gro" if (work_dir / "system.gro").exists() else input_coord
-            r = gmx.run_gmx_command(
-                "editconf",
-                ["-f", _src, "-o", "box.gro",
-                 "-c", "-d", str(box_clearance), "-bt", "cubic"],
-                work_dir=str(work_dir),
-            )
-            if r["returncode"] != 0:
-                raise HTTPException(500, f"editconf (vacuum) failed:\n{r.get('stderr', '')[-2000:]}")
-
-        coord_file = "box.gro"
+        coord_file = box_gro
 
     # ── Step C: production grompp → md.tpr ─────────────────────────────
     _archive_existing(work_dir, "md.tpr", "mdout.mdp")
@@ -275,7 +284,21 @@ async def start_simulation(session_id: str):
     sim_dir = work_dir / _SIM_SUBDIR
     sim_dir.mkdir(exist_ok=True)
     output_prefix = f"{_SIM_SUBDIR}/md"
+    # Ensure a fresh Docker-backed mdrun process per launch.
+    try:
+        gmx._cleanup()
+    except Exception:
+        pass
     mdrun = gmx.mdrun(tpr_file="md.tpr", output_prefix=output_prefix)
+    expected_nsteps = OmegaConf.select(cfg, "method.nsteps")
+    session.sim_status = {
+        "status": "running",
+        "started_at": time.time(),
+        "output_prefix": output_prefix,
+        "expected_nsteps": int(expected_nsteps) if expected_nsteps is not None else None,
+        "pid": mdrun["pid"],
+    }
+    _persist_run_status(session, "running")
 
     return {
         "status": "running",
@@ -288,7 +311,13 @@ async def start_simulation(session_id: str):
 async def simulation_status(session_id: str):
     """Check whether mdrun is currently running for this session."""
     from web.backend.session_manager import get_simulation_status
-    return get_simulation_status(session_id)
+    result = get_simulation_status(session_id)
+    terminal = result.get("status") if result.get("status") in {"finished", "failed"} else None
+    if terminal:
+        session = get_session(session_id)
+        if session:
+            _persist_run_status(session, terminal)
+    return result
 
 
 @router.post("/sessions/{session_id}/simulate/stop")

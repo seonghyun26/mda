@@ -1,5 +1,7 @@
 import type { ConfigOptions, SessionConfig } from "./types";
 
+const BASE = "/api";
+
 // ── Auth ──────────────────────────────────────────────────────────────
 
 export async function loginUser(
@@ -14,8 +16,6 @@ export async function loginUser(
   if (!res.ok) return { success: false };
   return { success: true, ...(await res.json()) };
 }
-
-const BASE = "/api";
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -53,7 +53,14 @@ export async function createSession(
 }
 
 export async function listSessions(username: string): Promise<{
-  sessions: { session_id: string; work_dir: string; nickname: string }[];
+  sessions: {
+    session_id: string;
+    work_dir: string;
+    nickname: string;
+    run_status?: string;
+    selected_molecule?: string;
+    updated_at?: string;
+  }[];
 }> {
   return json(await fetch(`${BASE}/sessions?username=${encodeURIComponent(username)}`));
 }
@@ -213,9 +220,10 @@ export async function getEnergy(
 }
 
 export async function getProgress(
-  sessionId: string
+  sessionId: string,
+  filename = "simulation/md.log"
 ): Promise<{ progress: { step: number; time_ps: number; ns_per_day: number } | null; available: boolean }> {
-  return json(await fetch(`${BASE}/sessions/${sessionId}/analysis/progress`));
+  return json(await fetch(`${BASE}/sessions/${sessionId}/analysis/progress?filename=${encodeURIComponent(filename)}`));
 }
 
 // ── Molecule library ──────────────────────────────────────────────────
@@ -237,7 +245,7 @@ export async function startSimulation(
 
 export async function getSimulationStatus(
   sessionId: string
-): Promise<{ running: boolean; pid?: number }> {
+): Promise<{ running: boolean; status?: "idle" | "running" | "finished" | "failed"; pid?: number; exit_code?: number }> {
   return json(await fetch(`${BASE}/sessions/${sessionId}/simulate/status`));
 }
 

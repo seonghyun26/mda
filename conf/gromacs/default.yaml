@@ -33,8 +33,9 @@ box_clearance: 1.5      # nm — minimum distance between molecule and box edge
 # Neighbor searching
 cutoff_scheme: Verlet
 nstlist: 10
-rcoulomb: 1.2           # nm
-rvdw: 1.2               # nm
+rlist: 1.0              # nm — match bioemu-cv chignolin (CLN025) setup
+rcoulomb: 1.0           # nm
+rvdw: 1.0               # nm
 
 # Electrostatics
 coulombtype: PME
@@ -52,5 +53,5 @@ nstxout: 5000
 nstvout: 5000
 nstfout: 0
 nstlog: 1000
-nstxout_compressed: 5000
+nstxout_compressed: 10
 nstenergy: 1000         # keep aligned with wandb.log_interval_steps

@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException
 from omegaconf import OmegaConf
 from pydantic import BaseModel
 
-from web.backend.session_manager import _repo_conf_dir, get_session
+from web.backend.session_manager import _repo_conf_dir, get_session, get_or_restore_session
 
 router = APIRouter()
 
@@ -55,7 +55,7 @@ async def update_session_config(session_id: str, req: ConfigUpdateRequest):
 
 @router.get("/sessions/{session_id}/config")
 async def get_session_config(session_id: str):
-    session = get_session(session_id)
+    session = get_or_restore_session(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
 
@@ -76,10 +76,16 @@ async def generate_session_files(session_id: str):
 
     generated: list[str] = []
 
-    # ── config.yaml — human-readable session config ───────────────────────
+    # ── config.yaml — human-readable session config (session root) ───────
     try:
-        OmegaConf.save(cfg, work_dir / "config.yaml")
-        generated.append("config.yaml")
+        session_root = work_dir.parent
+        session_root.mkdir(parents=True, exist_ok=True)
+        OmegaConf.save(cfg, session_root / "config.yaml")
+        generated.append("../config.yaml")
+        # Remove legacy config location inside data/ so it is not listed in web files.
+        legacy_cfg = work_dir / "config.yaml"
+        if legacy_cfg.exists():
+            legacy_cfg.unlink()
     except Exception as exc:
         raise HTTPException(500, f"Config YAML write failed: {exc}")
 
@@ -93,10 +99,12 @@ async def generate_session_files(session_id: str):
         raise HTTPException(500, f"MDP generation failed: {exc}")
 
     # ── session.json metadata (lives in session root, parent of data/) ───────
-    session_root = work_dir.parent
     session_root.mkdir(parents=True, exist_ok=True)
     meta_path = session_root / "session.json"
-    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    try:
+        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    except Exception:
+        meta = {}
     meta.update({
         "session_id": session_id,
         "nickname": session.nickname,
@@ -104,7 +112,10 @@ async def generate_session_files(session_id: str):
         "updated_at": datetime.utcnow().isoformat(),
     })
     meta.setdefault("status", "active")
-    meta_path.write_text(json.dumps(meta, indent=2))
+    try:
+        meta_path.write_text(json.dumps(meta, indent=2))
+    except Exception as exc:
+        raise HTTPException(500, f"Failed to write session.json: {exc}")
 
     return {"generated": generated, "work_dir": str(work_dir)}
 

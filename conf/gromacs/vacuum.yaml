@@ -1,6 +1,5 @@
-# GROMACS MDP parameters for alanine dipeptide in a vacuum periodic box
-# (no water; dodecahedron box with PME electrostatics)
-# Matches the box setup produced by prepare.sh.
+# GROMACS MDP parameters for vacuum periodic box (no solvent)
+# Used for any molecule — alanine dipeptide, chignolin, etc.
 
 integrator: md
 dt: 0.002
@@ -40,9 +39,9 @@ lincs_iter: 1
 lincs_order: 4
 
 # Output frequencies (steps)
-nstxout: 5000
-nstvout: 5000
+nstxout: 10
+nstvout: 10
 nstfout: 0
-nstlog: 1000
+nstlog: 10
 nstxout_compressed: 10
-nstenergy: 1000
+nstenergy: 10

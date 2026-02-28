@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { X, Loader2, AlertCircle, Crosshair, Camera } from "lucide-react";
+import { suppressNglDeprecationWarnings } from "@/lib/ngl";
 
 function parseStructureInfo(
   content: string,
@@ -55,156 +56,182 @@ interface RepState {
   surface: boolean;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type RepHandles = Record<keyof RepState, any | null>;
+
 const REP_LABELS: { key: keyof RepState; label: string }[] = [
-  { key: "ball",   label: "Ball"    },
-  { key: "stick",  label: "Stick"   },
-  { key: "ribbon", label: "Cartoon" },
+  { key: "ball",    label: "Ball"    },
+  { key: "stick",   label: "Stick"   },
+  { key: "ribbon",  label: "Cartoon" },
   { key: "surface", label: "Surface" },
 ];
 
-// ── Representation rendering (NGL) ────────────────────────────────────
-// ball    → NGL "spacefill"  (element colour scheme)
-// stick   → NGL "licorice"   (sticks only, no spheres)
-// ribbon  → NGL "cartoon"    (protein cartoon, residue-index colours)
-// surface → NGL "surface"    (molecular surface, white, opacity 0.1)
+const NULL_HANDLES: RepHandles = { ball: null, stick: null, ribbon: null, surface: null };
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyRepresentations(component: any, reps: RepState) {
-  component.removeAllRepresentations();
-  if (reps.ball) {
-    component.addRepresentation("spacefill", { colorScheme: "element", radiusScale: 0.2 });
-  }
-  if (reps.stick) {
-    component.addRepresentation("licorice", { colorScheme: "element" });
-  }
-  if (reps.ribbon) {
-    component.addRepresentation("cartoon", { sele: "protein", colorScheme: "residueindex" });
-  }
-  if (reps.surface) {
-    component.addRepresentation("surface", { color: "white", opacity: 0.1 });
-  }
+function addRepresentations(component: any, reps: RepState): RepHandles {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const safeAdd = (name: string, params: Record<string, unknown>): any | null => {
+    try { return component.addRepresentation(name, params); } catch { return null; }
+  };
+
+  const ball = safeAdd("spacefill", {
+    colorScheme: "element",
+    radiusScale: 0.2,
+    visible: reps.ball,
+  });
+
+  const stick = safeAdd("licorice", {
+    colorScheme: "element",
+    visible: reps.stick,
+  });
+
+  // Prefer protein cartoon; fall back to polymer, then whole structure.
+  const ribbon = (() => {
+    const r =
+      safeAdd("cartoon", { sele: "protein", colorScheme: "residueindex", visible: reps.ribbon }) ??
+      safeAdd("cartoon", { sele: "polymer", colorScheme: "residueindex", visible: reps.ribbon }) ??
+      safeAdd("cartoon", { colorScheme: "residueindex", visible: reps.ribbon });
+    return r;
+  })();
+
+  const surface = safeAdd("surface", { color: "white", opacity: 0.2, visible: reps.surface });
+
+  return { ball, stick, ribbon, surface };
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function updateRepVisibility(handles: RepHandles, reps: RepState, stage?: any) {
+  for (const key of Object.keys(reps) as (keyof RepState)[]) {
+    try { handles[key]?.setVisibility(reps[key]); } catch { /* ignore */ }
+  }
+  try { stage?.viewer?.requestRender?.(); } catch { /* ignore */ }
+}
+
+const DEFAULT_REPS: RepState = {
+  ball: true,
+  stick: true,
+  ribbon: false,
+  surface: false,
+};
+
 export default function MoleculeViewer({ fileContent, fileName, onClose, inline = false }: Props) {
-  const containerRef    = useRef<HTMLDivElement>(null);
+  const containerRef      = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const stageRef        = useRef<any>(null);
+  const stageRef          = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const componentRef    = useRef<any>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const initialOrientRef = useRef<any>(null);
-  const repsRef         = useRef<RepState>({ ball: true, stick: true, ribbon: false, surface: false });
+  const componentRef      = useRef<any>(null);
+  const handlesRef        = useRef<RepHandles>(NULL_HANDLES);
 
   const [ready, setReady]           = useState(false);
   const [error, setError]           = useState<string | null>(null);
-  const [reps, setReps]             = useState<RepState>({ ball: true, stick: true, ribbon: false, surface: false });
+  const [reps, setReps]             = useState<RepState>(DEFAULT_REPS);
   const [structInfo, setStructInfo] = useState<{ atoms: number; residues: number } | null>(null);
 
-  // Keep repsRef in sync for use inside async callbacks
-  useEffect(() => { repsRef.current = reps; }, [reps]);
-
-  // Re-apply representations when toggles change without reloading the file
+  // Toggle visibility via NGL handles when reps state changes
   useEffect(() => {
-    if (!componentRef.current) return;
-    applyRepresentations(componentRef.current, reps);
+    if (!componentRef.current || !stageRef.current) return;
+    updateRepVisibility(handlesRef.current, reps, stageRef.current);
   }, [reps]);
 
   // Load / reload structure when file content or name changes
   useEffect(() => {
+    let cancelled = false;
     setReady(false);
     setError(null);
     setStructInfo(null);
-    initialOrientRef.current = null;
+    setReps(DEFAULT_REPS);
     const ext = fileName.split(".").pop()?.toLowerCase() ?? "pdb";
     let ro: ResizeObserver | null = null;
 
     const initViewer = () => {
-      if (!containerRef.current || !window.NGL) return;
+      if (cancelled || !containerRef.current || !window.NGL) return;
 
       if (stageRef.current) {
         stageRef.current.dispose();
         stageRef.current = null;
       }
       componentRef.current = null;
+      handlesRef.current = NULL_HANDLES;
       containerRef.current.innerHTML = "";
 
+      suppressNglDeprecationWarnings();
       const stage = new window.NGL.Stage(containerRef.current, { backgroundColor: "#111827" });
       stageRef.current = stage;
-
-      // Make distance / angle measurement labels bigger and legible on dark bg
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      stage.signals.componentAdded.add((comp: any) => {
-        comp.eachRepresentation?.((repr: any) => {
-          if (repr.type === "distance" || repr.type === "angle" || repr.type === "label") {
-            repr.setParameters({
-              labelSize: 3.0,
-              labelColor: "#ffffff",
-              labelBackground: true,
-              labelBackgroundColor: "#000000",
-              labelBackgroundOpacity: 0.55,
-            });
-          }
-        });
-      });
 
       ro = new ResizeObserver(() => stage.handleResize());
       ro.observe(containerRef.current);
 
-      // Parse atom / residue count directly from the file text
       setStructInfo(parseStructureInfo(fileContent, fileName));
 
       const blob = new Blob([fileContent], { type: "text/plain" });
       stage
-        .loadFile(blob, { ext })
+        .loadFile(blob, { ext, defaultRepresentation: false, name: fileName })
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         .then((component: any) => {
+          if (cancelled) return;
           componentRef.current = component;
-          applyRepresentations(component, repsRef.current);
-          component.autoView(400);   // center + fit on load
-          // Capture the post-autoView orientation so Reset can restore it exactly
-          setTimeout(() => {
-            initialOrientRef.current =
-              stageRef.current?.viewerControls?.orient?.clone?.() ?? null;
-          }, 500);
+          try {
+            handlesRef.current = addRepresentations(component, DEFAULT_REPS);
+          } catch { /* ignore */ }
+          try { component.autoView(400); } catch { /* ignore */ }
           setReady(true);
         })
         .catch((err: unknown) => {
-          setError(String(err));
+          if (!cancelled) setError(String(err));
         });
     };
 
+    let scriptEl: HTMLScriptElement | null = null;
+    let loadHandler: (() => void) | null = null;
     if (window.NGL) {
       initViewer();
     } else {
-      const existing = document.getElementById("ngl-script");
+      const existing = document.getElementById("ngl-script") as HTMLScriptElement | null;
       if (existing) {
-        existing.addEventListener("load", initViewer);
+        scriptEl = existing;
+        if (window.NGL || existing.dataset.loaded === "true") {
+          initViewer();
+        } else {
+          loadHandler = () => {
+            existing.dataset.loaded = "true";
+            initViewer();
+          };
+          existing.addEventListener("load", loadHandler, { once: true });
+        }
       } else {
         const script = document.createElement("script");
+        scriptEl = script;
         script.id = "ngl-script";
         script.src = "https://cdn.jsdelivr.net/npm/ngl/dist/ngl.js";
         script.async = true;
-        script.onload = initViewer;
+        loadHandler = () => {
+          script.dataset.loaded = "true";
+          initViewer();
+        };
+        script.addEventListener("load", loadHandler, { once: true });
         document.head.appendChild(script);
       }
     }
 
     return () => {
+      cancelled = true;
+      if (scriptEl && loadHandler) {
+        scriptEl.removeEventListener("load", loadHandler);
+      }
       ro?.disconnect();
       if (stageRef.current) {
         stageRef.current.dispose();
         stageRef.current = null;
       }
       componentRef.current = null;
+      handlesRef.current = NULL_HANDLES;
     };
   }, [fileContent, fileName]);
 
   const handleResetView = () => {
-    if (!stageRef.current) return;
-    if (initialOrientRef.current) {
-      stageRef.current.animationControls.orient(initialOrientRef.current, 400);
-    } else {
-      componentRef.current?.autoView(400);
-    }
+    if (!componentRef.current) return;
+    try { componentRef.current.autoView(400); } catch { /* ignore */ }
   };
 
   const handleScreenshot = () => {
@@ -217,13 +244,15 @@ export default function MoleculeViewer({ fileContent, fileName, onClose, inline 
         const a = document.createElement("a");
         a.href = url;
         a.download = `${fileName.replace(/\.[^.]+$/, "")}_view.png`;
+        document.body.appendChild(a);
         a.click();
-        URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
       });
   };
 
   /** Toggle buttons shown to the right of the canvas */
-  const RepColumn = () => (
+  const repColumn = (
     <div className="flex flex-col gap-1.5 w-[148px] flex-shrink-0 pt-0.5">
       <span className="text-[9px] font-semibold text-gray-600 uppercase tracking-wider text-center">
         Representation
@@ -305,7 +334,7 @@ export default function MoleculeViewer({ fileContent, fileName, onClose, inline 
         </div>
 
         {/* Display toggles — right of canvas */}
-        <RepColumn />
+        {repColumn}
       </div>
     );
   }

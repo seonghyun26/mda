@@ -17,7 +17,6 @@ import {
   Upload,
   CheckCircle2,
   FileText,
-  Timer,
   Thermometer,
   Gauge,
   Mountain,
@@ -32,15 +31,16 @@ import {
   X,
   Archive,
   RotateCcw,
+  Lock,
 } from "lucide-react";
 
 import AgentModal from "@/components/agents/AgentModal";
 import type { AgentType } from "@/lib/agentStream";
 import { getUsername } from "@/lib/auth";
-import SimulationStatus from "@/components/status/SimulationStatus";
 import EnergyPlot from "@/components/viz/EnergyPlot";
 import ColvarPlot from "@/components/viz/ColvarPlot";
 import RamachandranPlot from "@/components/viz/RamachandranPlot";
+import TrajectoryViewer from "@/components/viz/TrajectoryViewer";
 import FileUpload from "@/components/files/FileUpload";
 import MoleculeViewer from "@/components/viz/MoleculeViewer";
 import {
@@ -57,6 +57,8 @@ import {
   createSession,
   updateSessionMolecule,
   startSimulation,
+  getSimulationStatus,
+  getProgress,
   stopSimulation,
 } from "@/lib/api";
 import { useSessionStore } from "@/store/sessionStore";
@@ -71,6 +73,16 @@ function defaultNickname(): string {
   const mm = String(now.getMinutes()).padStart(2, "0");
   const SS = String(now.getSeconds()).padStart(2, "0");
   return `${MM}${DD}-${HH}${mm}${SS}`;
+}
+
+function formatElapsed(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m ${sec}s`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
 }
 
 // ── Presets ───────────────────────────────────────────────────────────
@@ -106,8 +118,8 @@ const SYSTEM_LABELS: Record<string, string> = {
 interface GmxTemplate { id: string; label: string; description: string }
 
 const GMX_TEMPLATES: GmxTemplate[] = [
-  { id: "ala_vacuum", label: "Vacuum", description: "Dodecahedron vacuum box · no solvent · fast" },
-  { id: "auto",       label: "Auto",   description: "Maximally compatible defaults · PME · solvated" },
+  { id: "vacuum", label: "Vacuum", description: "Dodecahedron vacuum box · no solvent · fast" },
+  { id: "auto",   label: "Auto",   description: "Maximally compatible defaults · PME · solvated" },
 ];
 
 // ── UI primitives ─────────────────────────────────────────────────────
@@ -158,17 +170,23 @@ function Field({
   onChange,
   onBlur,
   type = "text",
+  step,
   unit,
   hint,
 }: {
   label: string;
   value: string | number;
-  onChange: (v: string) => void;
+  onChange: (v: string | number) => void;
   onBlur?: () => void;
   type?: string;
+  step?: string | number;
   unit?: string;
   hint?: string;
 }) {
+  const [draftNumberValue, setDraftNumberValue] = useState<string | null>(null);
+  const isNumber = type === "number";
+  const displayValue = isNumber ? (draftNumberValue ?? String(value ?? "")) : value;
+
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
@@ -181,9 +199,24 @@ function Field({
       </div>
       <input
         type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onBlur={onBlur}
+        value={displayValue}
+        onChange={(e) => {
+          if (isNumber) {
+            const raw = e.currentTarget.value;
+            setDraftNumberValue(raw);
+            // Allow temporary editing states; only commit valid numeric values.
+            if (raw === "" || raw === "-" || raw === "." || raw === "-.") return;
+            const n = Number(raw);
+            if (!Number.isNaN(n)) onChange(n);
+            return;
+          }
+          onChange(e.currentTarget.value);
+        }}
+        onBlur={() => {
+          if (isNumber) setDraftNumberValue(null);
+          onBlur?.();
+        }}
+        step={step ?? (type === "number" ? "any" : undefined)}
         className="w-full border border-gray-700 rounded-lg px-3 py-2 text-sm bg-gray-800 text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
       />
       {hint && <p className="mt-1 text-[11px] text-gray-600">{hint}</p>}
@@ -271,6 +304,102 @@ function PillTabs({
 const MOL_EXTS = new Set(["pdb", "gro", "mol2", "xyz", "sdf"]);
 function isMolFile(path: string) {
   return MOL_EXTS.has(path.split(".").pop()?.toLowerCase() ?? "");
+}
+
+const STATIC_DERIVED_MOL_NAMES = new Set(["system.gro", "box.gro", "solvated.gro", "ionized.gro"]);
+
+function fileBaseName(path: string): string {
+  return path.split("/").pop() ?? path;
+}
+
+function rootStem(name: string): string {
+  return name.replace(/\.[^.]+$/, "");
+}
+
+function expectedDerivedNames(rootName: string): string[] {
+  const stem = rootStem(rootName);
+  return [
+    `${stem}_system.gro`,
+    `${stem}_box.gro`,
+    `${stem}_solvated.gro`,
+    `${stem}_ionized.gro`,
+  ];
+}
+
+function isDerivedMolName(name: string): boolean {
+  const n = name.toLowerCase();
+  return (
+    STATIC_DERIVED_MOL_NAMES.has(n)
+    || n.endsWith("_system.gro")
+    || n.endsWith("_box.gro")
+    || n.endsWith("_solvated.gro")
+    || n.endsWith("_ionized.gro")
+  );
+}
+
+type MolTreeNode = {
+  path: string;
+  name: string;
+  isDerived: boolean;
+};
+
+type MolTreeGroup = {
+  root: MolTreeNode;
+  children: MolTreeNode[];
+};
+
+function buildMolTreeGroups(molFiles: string[], originHint: string): MolTreeGroup[] {
+  const byName = new Map<string, string>();
+  for (const p of molFiles) byName.set(fileBaseName(p), p);
+
+  const roots = molFiles
+    .filter((p) => !isDerivedMolName(fileBaseName(p)))
+    .sort((a, b) => fileBaseName(a).localeCompare(fileBaseName(b)));
+
+  const hintName = fileBaseName(originHint || "");
+  const activeRoot = roots.find((r) => fileBaseName(r) === hintName) ?? roots[0] ?? "";
+
+  const groups: MolTreeGroup[] = [];
+  for (const rootPath of roots) {
+    const rootName = fileBaseName(rootPath);
+    const children: MolTreeNode[] = [];
+
+    const derivedNames = expectedDerivedNames(rootName);
+    for (let i = 0; i < derivedNames.length; i++) {
+      const dn = derivedNames[i];
+      const dp = byName.get(dn);
+      if (dp) children.push({ path: dp, name: dn, isDerived: true });
+    }
+    groups.push({ root: { path: rootPath, name: rootName, isDerived: false }, children });
+  }
+
+  // If we only have derived files (no original root), show a readable fallback chain.
+  if (groups.length === 0) {
+    const preferred = [hintName, "system.gro", "box.gro", "solvated.gro", "ionized.gro"];
+    const present = preferred
+      .concat(Array.from(byName.keys()).sort())
+      .filter((n, idx, arr) => byName.has(n) && arr.indexOf(n) === idx);
+    if (present.length > 0) {
+      const rootName = present[0];
+      groups.push({
+        root: { path: byName.get(rootName)!, name: rootName, isDerived: false },
+        children: present.slice(1).map((n) => ({ path: byName.get(n)!, name: n, isDerived: true })),
+      });
+    }
+  }
+
+  // Move active root block first for faster scanning.
+  if (activeRoot) {
+    const activeRootName = fileBaseName(activeRoot);
+    const ordered: MolTreeGroup[] = [];
+    const rest: MolTreeGroup[] = [];
+    for (const g of groups) {
+      (g.root.name === activeRootName ? ordered : rest).push(g);
+    }
+    return [...ordered, ...rest];
+  }
+
+  return groups;
 }
 
 // ── File preview helpers ────────────────────────────────────────────────
@@ -415,9 +544,22 @@ function DeleteConfirmPopup({
 
 // ── Progress tab ───────────────────────────────────────────────────────
 
-function ProgressTab({ sessionId }: { sessionId: string }) {
+function ProgressTab({
+  sessionId,
+  runStatus,
+  exitCode,
+  totalSteps,
+  runStartedAt,
+}: {
+  sessionId: string;
+  runStatus: "idle" | "running" | "finished" | "failed" | "setting_up";
+  exitCode: number | null;
+  totalSteps: number;
+  runStartedAt: number | null;
+}) {
   const [agentOpen, setAgentOpen] = useState(false);
   const [simFiles, setSimFiles] = useState<string[]>([]);
+  const [allFiles, setAllFiles] = useState<string[]>([]);
   const [filesLoading, setFilesLoading] = useState(false);
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
@@ -428,11 +570,27 @@ function ProgressTab({ sessionId }: { sessionId: string }) {
   const [archiveFiles, setArchiveFiles] = useState<string[]>([]);
   const [archiveLoading, setArchiveLoading] = useState(false);
   const [restoringPath, setRestoringPath] = useState<string | null>(null);
+  const [liveProgress, setLiveProgress] = useState<{ step: number; time_ps: number; ns_per_day: number } | null>(null);
+  const [nowMs, setNowMs] = useState(Date.now());
+  const normalizeProgress = (p: { step?: unknown; time_ps?: unknown; ns_per_day?: unknown } | null | undefined) => {
+    if (!p) return null;
+    const step = Number(p.step);
+    const timePs = Number(p.time_ps);
+    const nsPerDay = Number(p.ns_per_day);
+    return {
+      step: Number.isFinite(step) ? step : 0,
+      time_ps: Number.isFinite(timePs) ? timePs : 0,
+      ns_per_day: Number.isFinite(nsPerDay) ? nsPerDay : 0,
+    };
+  };
 
   const refreshFiles = useCallback(() => {
     setFilesLoading(true);
     listFiles(sessionId)
-      .then(({ files }) => setSimFiles(files.filter((f) => !isMolFile(f))))
+      .then(({ files }) => {
+        setAllFiles(files);
+        setSimFiles(files.filter((f) => !isMolFile(f)));
+      })
       .catch(() => {})
       .finally(() => setFilesLoading(false));
   }, [sessionId]);
@@ -448,6 +606,46 @@ function ProgressTab({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     refreshFiles();
   }, [refreshFiles]);
+
+  // Refresh file list when the simulation finishes so trajectory/output files appear immediately
+  const prevRunStatus = useRef(runStatus);
+  useEffect(() => {
+    if (prevRunStatus.current !== runStatus && (runStatus === "finished" || runStatus === "failed")) {
+      refreshFiles();
+    }
+    prevRunStatus.current = runStatus;
+  }, [runStatus, refreshFiles]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const isActiveRun = runStatus === "running" || runStatus === "setting_up";
+    const tickNow = () => setNowMs(Date.now());
+    const intervalNow = isActiveRun ? setInterval(tickNow, 1000) : null;
+
+    const pollProgress = async () => {
+      try {
+        const primary = await getProgress(sessionId, "simulation/md.log");
+        if (cancelled) return;
+        if (primary.available && primary.progress) {
+          setLiveProgress(normalizeProgress(primary.progress));
+          return;
+        }
+        const fallback = await getProgress(sessionId, "md.log");
+        if (cancelled) return;
+        setLiveProgress(fallback.available ? normalizeProgress(fallback.progress) : null);
+      } catch {
+        if (!cancelled) setLiveProgress(null);
+      }
+    };
+
+    void pollProgress();
+    const intervalProgress = isActiveRun ? setInterval(() => { void pollProgress(); }, 2000) : null;
+    return () => {
+      cancelled = true;
+      if (intervalNow) clearInterval(intervalNow);
+      if (intervalProgress) clearInterval(intervalProgress);
+    };
+  }, [sessionId, runStatus]);
 
   // Load archive list whenever the panel is opened
   useEffect(() => {
@@ -482,21 +680,115 @@ function ProgressTab({ sessionId }: { sessionId: string }) {
     }
   };
 
+  const _allNames = allFiles.map((f) => ({
+    path: f,
+    normalizedPath: f.replace(/\\/g, "/").toLowerCase(),
+    name: fileBaseName(f),
+    lower: fileBaseName(f).toLowerCase(),
+  }));
+  const trajectoryFile = _allNames.find((f) => f.normalizedPath.includes("/simulation/") && f.lower.endsWith(".xtc"))
+    ?? _allNames.find((f) => f.lower.endsWith(".xtc"))
+    ?? _allNames.find((f) => f.normalizedPath.includes("/simulation/") && f.lower.endsWith(".trr"))
+    ?? _allNames.find((f) => f.lower.endsWith(".trr"));
+  const topologyFile = _allNames.find((f) => f.lower.endsWith("_ionized.gro"))
+    ?? _allNames.find((f) => f.lower.endsWith("_solvated.gro"))
+    ?? _allNames.find((f) => f.lower.endsWith("_box.gro"))
+    ?? _allNames.find((f) => f.lower.endsWith("_system.gro"))
+    ?? _allNames.find((f) => f.lower.endsWith(".gro"))
+    ?? _allNames.find((f) => f.lower.endsWith(".pdb"));
+  const targetSteps = Number.isFinite(totalSteps) && totalSteps > 0 ? totalSteps : 0;
+  const pctRaw = targetSteps > 0 && liveProgress
+    ? Math.max(0, Math.min(100, (liveProgress.step / targetSteps) * 100))
+    : 0;
+  const pct = runStatus === "finished" ? 100 : pctRaw;
+  const elapsedMs = runStartedAt ? Math.max(0, nowMs - runStartedAt) : 0;
+  const elapsedLabel = runStartedAt ? formatElapsed(elapsedMs) : "0s";
+  const simNs = liveProgress ? liveProgress.time_ps / 1000 : 0;
+  const computedNsPerDay = elapsedMs > 0 && simNs > 0
+    ? (simNs * 86400000) / elapsedMs
+    : null;
+  const runStatusBadge = runStatus === "running"
+    ? { label: "Running",  className: "text-green-400" }
+    : runStatus === "finished"
+      ? { label: "Finished", className: "text-blue-400" }
+      : runStatus === "failed"
+        ? { label: `Failed${exitCode !== null ? ` (exit ${exitCode})` : ""}`, className: "text-yellow-400" }
+        : { label: "Standby", className: "text-gray-400" };
+
   return (
     <div className="p-4 space-y-4">
       {/* Status + agent button */}
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold text-gray-400">Simulation Status</span>
-        <button
-          onClick={() => setAgentOpen(true)}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs bg-emerald-900/30 border border-emerald-800/50 text-emerald-400 hover:bg-emerald-800/40 transition-colors font-medium"
-        >
-          <Bot size={11} />
-          Analyse Results
-        </button>
+      <div className="sticky top-0 z-20 -mx-4 px-4 py-2 bg-gray-950/95 backdrop-blur border-b border-gray-800/80">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-gray-200">Simulation Status</h3>
+          <button
+            onClick={() => setAgentOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs bg-emerald-900/30 border border-emerald-800/50 text-emerald-400 hover:bg-emerald-800/40 transition-colors font-medium"
+          >
+            <Bot size={11} />
+            Analyse Results
+          </button>
+        </div>
       </div>
 
-      <SimulationStatus />
+      <Section
+        icon={<Activity size={13} />}
+        title="Run Summary"
+        accent="emerald"
+        action={<span className={`text-[11px] font-semibold ${runStatusBadge.className}`}>{runStatusBadge.label}</span>}
+      >
+        <div className="grid grid-cols-3 gap-2">
+          <div className="bg-gray-900/70 border border-gray-800 rounded-lg p-2">
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider">Wall Time</p>
+            <p className="text-sm font-mono text-gray-200">{elapsedLabel}</p>
+          </div>
+          <div className="bg-gray-900/70 border border-gray-800 rounded-lg p-2">
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider">Sim Time</p>
+            <p className="text-sm font-mono text-gray-200">{simNs.toFixed(3)} ns</p>
+          </div>
+          <div className="bg-gray-900/70 border border-gray-800 rounded-lg p-2">
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider">Performance</p>
+            <p className="text-sm font-mono text-gray-200">
+              {computedNsPerDay !== null ? `${computedNsPerDay.toFixed(2)} ns/day` : "—"}
+            </p>
+          </div>
+        </div>
+        <div className="space-y-1">
+          <div className="flex justify-between text-[11px] text-gray-500">
+            <span>
+              {runStatus === "finished"
+                ? `${targetSteps.toLocaleString()} / ${targetSteps.toLocaleString()} steps`
+                : liveProgress
+                  ? `${liveProgress.step.toLocaleString()} / ${targetSteps.toLocaleString()} steps`
+                  : "Waiting for md.log..."}
+            </span>
+            <span>{(runStatus === "finished" || (liveProgress && targetSteps > 0)) ? `${pct.toFixed(1)}%` : "0.0%"}</span>
+          </div>
+          <div className="h-2 bg-gray-800 rounded-full overflow-hidden">
+            <div className="h-full bg-emerald-500 rounded-full transition-all duration-500" style={{ width: `${pct}%` }} />
+          </div>
+        </div>
+      </Section>
+
+      <Section
+        icon={<Play size={13} />}
+        title="Trajectory"
+        accent="blue"
+      >
+        {runStatus === "finished" && trajectoryFile && topologyFile ? (
+          <TrajectoryViewer
+            sessionId={sessionId}
+            topologyPath={topologyFile.path}
+            trajectoryPath={trajectoryFile.path}
+          />
+        ) : (
+          <p className="text-xs text-gray-600 py-1">
+            {runStatus === "finished"
+              ? "No trajectory file found. Check simulation output."
+              : "Trajectory will appear here after the simulation completes."}
+          </p>
+        )}
+      </Section>
 
       <div className="space-y-4 pt-2">
         <div className="flex items-center gap-2">
@@ -685,12 +977,14 @@ function MoleculeTab({
   sessionId,
   cfg,
   selectedMolecule,
+  moleculeLoading,
   onSelectMolecule,
   onMoleculeDeleted,
 }: {
   sessionId: string;
   cfg: Record<string, unknown>;
   selectedMolecule: { content: string; name: string } | null;
+  moleculeLoading?: boolean;
   onSelectMolecule: (m: { content: string; name: string }) => void;
   onMoleculeDeleted: (name: string) => void;
 }) {
@@ -702,11 +996,19 @@ function MoleculeTab({
   const [viewLoading, setViewLoading] = useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = useState<string | null>(null);
   const [agentOpen, setAgentOpen] = useState(false);
+  const [expandedRoots, setExpandedRoots] = useState<Record<string, boolean>>({});
 
   const refreshFiles = useCallback(() => {
     setLoading(true);
     listFiles(sessionId)
-      .then(({ files }) => setFiles(files))
+      .then(({ files, work_dir }) => {
+        const base = work_dir.replace(/\\/g, "/").replace(/\/+$/, "");
+        const visible = files.filter((f) => {
+          const p = f.replace(/\\/g, "/");
+          return !p.startsWith(`${base}/simulation/`) && !p.includes("/simulation/");
+        });
+        setFiles(visible);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [sessionId]);
@@ -743,40 +1045,69 @@ function MoleculeTab({
   };
 
   const molFiles = files.filter(isMolFile);
+  const coordHintRaw = String(system.coordinates ?? "");
+  const coordHintName = fileBaseName(coordHintRaw);
+  const originHint = !isDerivedMolName(coordHintName)
+    ? coordHintRaw
+    : (selectedMolecule?.name && !isDerivedMolName(selectedMolecule.name) ? selectedMolecule.name : "");
+  const molTree = buildMolTreeGroups(molFiles, originHint);
+
+  useEffect(() => {
+    if (molTree.length === 0) return;
+    setExpandedRoots((prev) => {
+      const next = { ...prev };
+      for (const g of molTree) {
+        if (next[g.root.name] === undefined) next[g.root.name] = true;
+      }
+      return next;
+    });
+  }, [molTree]);
 
   return (
     <div className="p-4 space-y-4">
       {/* Header: {molecule} - {filename} + agent button */}
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-semibold text-gray-200 truncate">
-          {selectedMolecule ? (
-            <>
-              {systemLabel && (
-                <span className="text-gray-400 font-normal">{systemLabel} — </span>
-              )}
-              {selectedMolecule.name}
-            </>
-          ) : (
-            <span className="text-gray-500 font-normal text-xs">No molecule selected</span>
-          )}
-        </span>
-        <button
-          onClick={() => setAgentOpen(true)}
-          className="flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs bg-blue-900/30 border border-blue-800/50 text-blue-400 hover:bg-blue-800/40 transition-colors font-medium"
-        >
-          <Bot size={11} />
-          Search with agent
-        </button>
+      <div className="sticky top-0 z-20 -mx-4 px-4 py-2 bg-gray-950/95 backdrop-blur border-b border-gray-800/80">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold text-gray-200 truncate">
+            {selectedMolecule ? (
+              <>
+                {systemLabel && (
+                  <span className="text-gray-400 font-normal">{systemLabel} — </span>
+                )}
+                {selectedMolecule.name}
+              </>
+            ) : (
+              <span className="text-gray-500 font-normal text-xs">No molecule selected</span>
+            )}
+          </h3>
+          <button
+            onClick={() => setAgentOpen(true)}
+            className="flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs bg-blue-900/30 border border-blue-800/50 text-blue-400 hover:bg-blue-800/40 transition-colors font-medium"
+          >
+            <Bot size={11} />
+            Search with agent
+          </button>
+        </div>
       </div>
 
       {/* Inline 3D viewer */}
-      {selectedMolecule && (
+      {selectedMolecule ? (
         <MoleculeViewer
           fileContent={selectedMolecule.content}
           fileName={selectedMolecule.name}
           inline={true}
         />
-      )}
+      ) : (moleculeLoading || viewLoading) ? (
+        <div
+          className="relative rounded-xl border border-gray-700/60 bg-gray-900 overflow-hidden flex items-center justify-center"
+          style={{ height: "520px" }}
+        >
+          <div className="flex items-center gap-2 text-gray-400">
+            <Loader2 size={20} className="animate-spin" />
+            <span className="text-sm">Loading molecule…</span>
+          </div>
+        </div>
+      ) : null}
 
       {/* Molecule files + integrated upload */}
       <Section
@@ -794,60 +1125,86 @@ function MoleculeTab({
         }
       >
 
-        {molFiles.length > 0 && (
+        {molTree.length > 0 && (
           <div className="space-y-1.5 mb-3">
-            {molFiles.map((f) => {
-              const name = f.split("/").pop() ?? f;
-              const isLoading = viewLoading === name;
-              const isDeleting = deleteLoading === name;
-              const isSelected = selectedMolecule?.name === name;
+            {molTree.map((group) => {
+              const nodes = [group.root, ...(expandedRoots[group.root.name] ? group.children : [])];
               return (
-                <div
-                  key={f}
-                  className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border ${
-                    isSelected
-                      ? "bg-indigo-950/40 border-indigo-700/60"
-                      : "bg-gray-800/50 border-gray-700/50"
-                  }`}
-                >
-                  <span className="text-base">🧬</span>
-                  <span className="text-xs text-gray-200 truncate flex-1 font-mono" title={f}>
-                    {name}
-                  </span>
-                  <button
-                    onClick={() => handleSelect(f)}
-                    disabled={isLoading || isDeleting}
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs border transition-colors disabled:opacity-50 flex-shrink-0 ${
-                      isSelected
-                        ? "bg-indigo-600/80 hover:bg-indigo-500 text-white border-indigo-500/50"
-                        : "bg-indigo-700/70 hover:bg-indigo-600 text-indigo-200 border-indigo-700/50"
-                    }`}
-                  >
-                    {isLoading
-                      ? <RefreshCw size={10} className="animate-spin" />
-                      : isSelected
-                      ? <CheckCircle2 size={10} />
-                      : null}
-                    {isSelected ? "Selected" : "Select"}
-                  </button>
-                  <a
-                    href={downloadUrl(sessionId, f)}
-                    download={name}
-                    className="flex items-center justify-center p-1.5 rounded-md text-gray-400 hover:text-blue-400 hover:bg-blue-900/20 border border-gray-700/50 hover:border-blue-800/40 transition-colors flex-shrink-0"
-                    title="Download file"
-                  >
-                    <Download size={11} />
-                  </a>
-                  <button
-                    onClick={() => handleDelete(f)}
-                    disabled={isDeleting || isLoading}
-                    className="flex items-center justify-center p-1.5 rounded-md text-gray-400 hover:text-red-400 hover:bg-red-900/20 border border-gray-700/50 hover:border-red-800/40 transition-colors disabled:opacity-40 flex-shrink-0"
-                    title="Delete file"
-                  >
-                    {isDeleting
-                      ? <RefreshCw size={11} className="animate-spin" />
-                      : <Trash2 size={11} />}
-                  </button>
+                <div key={group.root.path} className="space-y-1">
+                  {nodes.map((node, idx) => {
+                    const f = node.path;
+                    const name = node.name;
+                    const isLoading = viewLoading === name;
+                    const isDeleting = deleteLoading === name;
+                    const isSelected = selectedMolecule?.name === name;
+                    const isRoot = idx === 0;
+                    return (
+                      <div
+                        key={f}
+                        className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border ${
+                          isSelected
+                            ? "bg-indigo-950/40 border-indigo-700/60"
+                            : "bg-gray-800/50 border-gray-700/50"
+                        }`}
+                        style={{ marginLeft: isRoot ? "0px" : "16px" }}
+                      >
+                        {isRoot ? (
+                          <button
+                            onClick={() => setExpandedRoots((s) => ({ ...s, [group.root.name]: !s[group.root.name] }))}
+                            className="text-gray-500 hover:text-gray-300 transition-colors"
+                            title={expandedRoots[group.root.name] ? "Collapse tree" : "Expand tree"}
+                          >
+                            {expandedRoots[group.root.name] ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                          </button>
+                        ) : (
+                          <span className="text-gray-500 text-xs font-mono w-3 text-center">└</span>
+                        )}
+                        <span className="text-base">{node.isDerived ? "🧪" : "🧬"}</span>
+                        <span className="text-xs text-gray-200 truncate flex-1 font-mono" title={f}>
+                          {name}
+                        </span>
+                        {node.isDerived && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded border border-gray-700/60 text-gray-500 bg-gray-900/70">
+                            intermediate
+                          </span>
+                        )}
+                        <button
+                          onClick={() => handleSelect(f)}
+                          disabled={isLoading || isDeleting}
+                          className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs border transition-colors disabled:opacity-50 flex-shrink-0 ${
+                            isSelected
+                              ? "bg-indigo-600/80 hover:bg-indigo-500 text-white border-indigo-500/50"
+                              : "bg-indigo-700/70 hover:bg-indigo-600 text-indigo-200 border-indigo-700/50"
+                          }`}
+                        >
+                          {isLoading
+                            ? <RefreshCw size={10} className="animate-spin" />
+                            : isSelected
+                            ? <CheckCircle2 size={10} />
+                            : null}
+                          {isSelected ? "Selected" : "Select"}
+                        </button>
+                        <a
+                          href={downloadUrl(sessionId, f)}
+                          download={name}
+                          className="flex items-center justify-center p-1.5 rounded-md text-gray-400 hover:text-blue-400 hover:bg-blue-900/20 border border-gray-700/50 hover:border-blue-800/40 transition-colors flex-shrink-0"
+                          title="Download file"
+                        >
+                          <Download size={11} />
+                        </a>
+                        <button
+                          onClick={() => handleDelete(f)}
+                          disabled={isDeleting || isLoading}
+                          className="flex items-center justify-center p-1.5 rounded-md text-gray-400 hover:text-red-400 hover:bg-red-900/20 border border-gray-700/50 hover:border-red-800/40 transition-colors disabled:opacity-40 flex-shrink-0"
+                          title="Delete file"
+                        >
+                          {isDeleting
+                            ? <RefreshCw size={11} className="animate-spin" />
+                            : <Trash2 size={11} />}
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               );
             })}
@@ -871,128 +1228,158 @@ function GromacsTab({
   cfg,
   onChange,
   onSave,
+  saveState,
+  runStatus,
 }: {
   cfg: Record<string, unknown>;
   onChange: (k: string, v: unknown) => void;
   onSave: () => void;
+  saveState: "idle" | "saving" | "saved";
+  runStatus: "idle" | "running" | "finished" | "failed" | "setting_up";
 }) {
   const gromacs = (cfg.gromacs ?? {}) as Record<string, unknown>;
   const method  = (cfg.method  ?? {}) as Record<string, unknown>;
   const system  = (cfg.system  ?? {}) as Record<string, unknown>;
+  const isLocked = runStatus !== "idle";
 
   return (
     <div className="p-4 space-y-4">
-      <h3 className="text-sm font-semibold text-gray-200">GROMACS Parameters</h3>
+      <div className="sticky top-0 z-20 -mx-4 px-4 py-2 bg-gray-950/95 backdrop-blur border-b border-gray-800/80">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-gray-200">GROMACS Parameters</h3>
+          {isLocked && (
+            <span className="inline-flex items-center gap-1.5 text-xs text-amber-400">
+              <Lock size={12} />
+              Locked after simulation started
+            </span>
+          )}
+          {!isLocked && saveState === "saving" && (
+            <span className="inline-flex items-center gap-1.5 text-xs text-blue-400">
+              <Loader2 size={12} className="animate-spin" />
+              Saving
+            </span>
+          )}
+          {!isLocked && saveState === "saved" && (
+            <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
+              <CheckCircle2 size={12} />
+              Saved
+            </span>
+          )}
+        </div>
+      </div>
 
-      {/* System */}
-      <Section icon={<FlaskConical size={13} />} title="System" accent="emerald">
-        <FieldGrid>
-          <SelectField
-            label="Force Field"
-            value={String(system.forcefield ?? "amber99sb-ildn")}
-            onChange={(v) => onChange("system.forcefield", v)}
-            onSave={onSave}
-            options={[
-              { value: "amber99sb-ildn", label: "AMBER99SB-ILDN" },
-              { value: "charmm27",       label: "CHARMM27"       },
-              { value: "charmm36m",      label: "CHARMM36m"      },
-            ]}
-          />
-          <SelectField
-            label="Solvent"
-            value={String(system.water_model ?? "tip3p")}
-            onChange={(v) => onChange("system.water_model", v)}
-            onSave={onSave}
-            options={[
-              { value: "none",  label: "Vacuum"      },
-              { value: "tip3p", label: "TIP3P Water" },
-            ]}
-          />
-          <Field
-            label="Box clearance"
-            type="number"
-            value={String(gromacs.box_clearance ?? "1.5")}
-            onChange={(v) => onChange("gromacs.box_clearance", Number(v))}
-            onBlur={onSave}
-            unit="nm"
-          />
-        </FieldGrid>
-        <p className="text-[11px] text-gray-600">
-          Minimum distance from the molecule to the box edge (editconf <code className="font-mono">-d</code>).
-          Must satisfy: clearance × √3/2 &gt; max cutoff ({String((gromacs.rcoulomb as number | undefined) ?? 1.2)} nm).
-        </p>
-      </Section>
+      <fieldset disabled={isLocked} className={isLocked ? "space-y-4 opacity-70" : "space-y-4"}>
+        {/* System */}
+        <Section icon={<FlaskConical size={13} />} title="System" accent="emerald">
+          <FieldGrid>
+            <SelectField
+              label="Force Field"
+              value={String(system.forcefield ?? "amber99sb-ildn")}
+              onChange={(v) => onChange("system.forcefield", v)}
+              onSave={onSave}
+              options={[
+                { value: "amber99sb-ildn", label: "AMBER99SB-ILDN" },
+                { value: "charmm27",       label: "CHARMM27"       },
+                { value: "charmm36m",      label: "CHARMM36m"      },
+              ]}
+            />
+            <SelectField
+              label="Solvent"
+              value={String(system.water_model ?? "tip3p")}
+              onChange={(v) => onChange("system.water_model", v)}
+              onSave={onSave}
+              options={[
+                { value: "none",  label: "Vacuum"      },
+                { value: "tip3p", label: "TIP3P Water" },
+              ]}
+            />
+            <Field
+              label="Box clearance"
+              type="number"
+              value={String(gromacs.box_clearance ?? "1.5")}
+              onChange={(v) => onChange("gromacs.box_clearance", Number(v))}
+              onBlur={onSave}
+              unit="nm"
+            />
+          </FieldGrid>
+          <p className="text-[11px] text-gray-600">
+            Minimum distance from the molecule to the box edge (editconf <code className="font-mono">-d</code>).
+            Must satisfy: clearance × √3/2 &gt; max cutoff ({String((gromacs.rcoulomb as number | undefined) ?? 1.0)} nm).
+          </p>
+        </Section>
 
-      {/* Simulation length */}
-      {(() => {
-        const nsteps = Number(method.nsteps ?? 0);
-        const dt = Number(gromacs.dt ?? 0.002);
-        const totalPs = nsteps * dt;
-        const totalLabel = nsteps > 0
-          ? totalPs < 1
-            ? `${(totalPs * 1000).toFixed(0)} fs`
-            : totalPs < 1000
-              ? `${totalPs % 1 === 0 ? totalPs.toFixed(0) : totalPs.toFixed(2)} ps`
-              : `${(totalPs / 1000).toFixed(3).replace(/\.?0+$/, "")} ns`
-          : null;
-        return (
-          <Section
-            icon={<Binary size={13} />}
-            title="Simulation Length"
-            accent="blue"
-            action={totalLabel && (
-              <span className="text-xs font-mono text-blue-400">{totalLabel}</span>
-            )}
-          >
-            <FieldGrid>
-              <Field
-                label="Steps"
-                type="number"
-                value={String(method.nsteps ?? "")}
-                onChange={(v) => onChange("method.nsteps", Number(v))}
-                onBlur={onSave}
-                hint="Total MD steps to run."
-              />
-              <Field
-                label="Timestep"
-                type="number"
-                value={String(Number(gromacs.dt ?? 0.002) * 1000)}
-                onChange={(v) => onChange("gromacs.dt", Number(v) / 1000)}
-                onBlur={onSave}
-                unit="fs"
-                hint="2 fs is standard."
-              />
-            </FieldGrid>
-          </Section>
-        );
-      })()}
+        {/* Simulation length */}
+        {(() => {
+          const nsteps = Number(method.nsteps ?? 0);
+          const dt = Number(gromacs.dt ?? 0.002);
+          const totalPs = nsteps * dt;
+          const totalLabel = nsteps > 0
+            ? totalPs < 1
+              ? `${(totalPs * 1000).toFixed(0)} fs`
+              : totalPs < 1000
+                ? `${totalPs % 1 === 0 ? totalPs.toFixed(0) : totalPs.toFixed(2)} ps`
+                : `${(totalPs / 1000).toFixed(3).replace(/\.?0+$/, "")} ns`
+            : null;
+          return (
+            <Section
+              icon={<Binary size={13} />}
+              title="Simulation Length"
+              accent="blue"
+              action={totalLabel && (
+                <span className="text-xs font-mono text-blue-400">{totalLabel}</span>
+              )}
+            >
+              <FieldGrid>
+                <Field
+                  label="Steps"
+                  type="number"
+                  value={String(method.nsteps ?? "")}
+                  onChange={(v) => onChange("method.nsteps", Number(v))}
+                  onBlur={onSave}
+                  hint="Total MD steps to run."
+                />
+                <Field
+                  label="Timestep"
+                  type="number"
+                  value={String(Number(gromacs.dt ?? 0.002) * 1000)}
+                  onChange={(v) => onChange("gromacs.dt", Number(v) / 1000)}
+                  onBlur={onSave}
+                  unit="fs"
+                  hint="2 fs is standard."
+                />
+              </FieldGrid>
+            </Section>
+          );
+        })()}
 
-      {/* Thermostat */}
-      <Section icon={<Thermometer size={13} />} title="Temperature" accent="amber">
-        <FieldGrid>
-          <Field
-            label="Reference Temperature"
-            type="number"
-            value={String(Array.isArray(gromacs.ref_t) ? (gromacs.ref_t as number[])[0] : gromacs.ref_t ?? gromacs.temperature ?? "300")}
-            onChange={(v) => onChange("gromacs.ref_t", [Number(v)])}
-            onBlur={onSave}
-            unit="K"
-            hint="Target temperature (V-rescale)."
-          />
-          <Field
-            label="Thermostat time constant"
-            type="number"
-            value={String(Array.isArray(gromacs.tau_t) ? (gromacs.tau_t as number[])[0] : gromacs.tau_t ?? "0.1")}
-            onChange={(v) => onChange("gromacs.tau_t", [Number(v)])}
-            onBlur={onSave}
-            unit="ps"
-            hint="τ for V-rescale coupling."
-          />
-        </FieldGrid>
-      </Section>
+        {/* Thermostat */}
+        <Section icon={<Thermometer size={13} />} title="Temperature" accent="amber">
+          <FieldGrid>
+            <Field
+              label="Reference Temperature"
+              type="number"
+              value={String(Array.isArray(gromacs.ref_t) ? (gromacs.ref_t as number[])[0] : gromacs.ref_t ?? gromacs.temperature ?? "300")}
+              onChange={(v) => onChange("gromacs.ref_t", [Number(v)])}
+              onBlur={onSave}
+              unit="K"
+              hint="Target temperature (V-rescale)."
+            />
+            <Field
+              label="Thermostat time constant"
+              type="number"
+              value={String(Array.isArray(gromacs.tau_t) ? (gromacs.tau_t as number[])[0] : gromacs.tau_t ?? "0.1")}
+              onChange={(v) => onChange("gromacs.tau_t", [Number(v)])}
+              onBlur={onSave}
+              unit="ps"
+              hint="τ for V-rescale coupling."
+            />
+          </FieldGrid>
+        </Section>
 
-      {/* Advanced / details — folded by default */}
-      <AdvancedSection cfg={cfg} onChange={onChange} onSave={onSave} />
+      </fieldset>
+
+      {/* Advanced — outside fieldset so toggle works when locked */}
+      <AdvancedSection cfg={cfg} onChange={onChange} onSave={onSave} isLocked={isLocked} />
     </div>
   );
 }
@@ -1001,10 +1388,12 @@ function AdvancedSection({
   cfg,
   onChange,
   onSave,
+  isLocked,
 }: {
   cfg: Record<string, unknown>;
   onChange: (k: string, v: unknown) => void;
   onSave: () => void;
+  isLocked: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const gromacs = (cfg.gromacs ?? {}) as Record<string, unknown>;
@@ -1024,6 +1413,7 @@ function AdvancedSection({
       </button>
 
       {open && (
+        <fieldset disabled={isLocked} className={isLocked ? "space-y-3 opacity-70" : "space-y-3"}>
         <div className="p-3 space-y-3 border-t border-gray-700/40 bg-gray-900/20">
           {/* Non-bonded cutoffs */}
           <div>
@@ -1032,7 +1422,7 @@ function AdvancedSection({
               <Field
                 label="Coulomb cutoff"
                 type="number"
-                value={String(gromacs.rcoulomb ?? "1.2")}
+                value={String(gromacs.rcoulomb ?? "1.0")}
                 onChange={(v) => onChange("gromacs.rcoulomb", Number(v))}
                 onBlur={onSave}
                 unit="nm"
@@ -1040,7 +1430,7 @@ function AdvancedSection({
               <Field
                 label="VdW cutoff"
                 type="number"
-                value={String(gromacs.rvdw ?? "1.2")}
+                value={String(gromacs.rvdw ?? "1.0")}
                 onChange={(v) => onChange("gromacs.rvdw", Number(v))}
                 onBlur={onSave}
                 unit="nm"
@@ -1173,7 +1563,7 @@ function AdvancedSection({
               <Field
                 label="nstxout-compressed"
                 type="number"
-                value={String(gromacs.nstxout_compressed ?? "5000")}
+                value={String(gromacs.nstxout_compressed ?? "10")}
                 onChange={(v) => onChange("gromacs.nstxout_compressed", Number(v))}
                 onBlur={onSave}
                 hint="Coordinates to .xtc"
@@ -1224,6 +1614,7 @@ function AdvancedSection({
             </FieldGrid>
           </div>
         </div>
+        </fieldset>
       )}
     </div>
   );
@@ -1265,7 +1656,9 @@ function MethodTab({
 
   return (
     <div className="p-4 space-y-4">
-      <h3 className="text-sm font-semibold text-gray-200">Simulation Method</h3>
+      <div className="sticky top-0 z-20 -mx-4 px-4 py-2 bg-gray-950/95 backdrop-blur border-b border-gray-800/80">
+        <h3 className="text-sm font-semibold text-gray-200">Simulation Method</h3>
+      </div>
 
       {/* Current method + toggle */}
       <div className="rounded-xl border border-gray-700/60 bg-gray-900/60 overflow-hidden">
@@ -1404,7 +1797,7 @@ function NewSessionForm({
   const [nickname, setNickname] = useState(defaultNickname);
   const [preset, setPreset] = useState("md");
   const [system, setSystem] = useState("ala_dipeptide");
-  const [gromacs, setGromacs] = useState("ala_vacuum");
+  const [gromacs, setGromacs] = useState("vacuum");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -1565,26 +1958,60 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
   const cfgRef = useRef<Record<string, unknown>>({});
   const [activeTab, setActiveTab] = useState("progress");
   const [selectedMolecule, setSelectedMolecule] = useState<{ content: string; name: string } | null>(null);
+  const [moleculeLoading, setMoleculeLoading] = useState(false);
   const [simState, setSimState] = useState<SimState>("idle");
+  const [simRunStatus, setSimRunStatus] = useState<"idle" | "running" | "finished" | "failed" | "setting_up">("idle");
+  const [simExitCode, setSimExitCode] = useState<number | null>(null);
+  const [simStartedAt, setSimStartedAt] = useState<number | null>(null);
   const [pauseConfirmOpen, setPauseConfirmOpen] = useState(false);
-  const { setSession, sessions, setSessionMolecule, appendSSEEvent } = useSessionStore();
+  const [gromacsSaveState, setGromacsSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const { setSession, sessions, addSession, setSessionMolecule, setSessionRunStatus, appendSSEEvent } = useSessionStore();
   // Stable ref — lets the restore effect read latest sessions without re-running
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
 
-  // Reset simulation state when switching sessions
+  // Reset simulation state when switching sessions, preserving terminal states from the store
   useEffect(() => {
+    const stored = sessionsRef.current.find((s) => s.session_id === sessionId)?.run_status;
+    const preserved = stored === "finished" || stored === "failed" ? stored : "idle";
     setSimState("idle");
+    setSimRunStatus(preserved);
+    setSimExitCode(null);
+    setSimStartedAt(null);
     setPauseConfirmOpen(false);
+    setGromacsSaveState("idle");
   }, [sessionId]);
+
+  const gromacsSaveSeqRef = useRef(0);
+  const gromacsSavedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const simRunStatusRef = useRef(simRunStatus);
+  simRunStatusRef.current = simRunStatus;
+
+  // Keep the session list sidebar in sync with the current run status
+  useEffect(() => {
+    if (sessionId) setSessionRunStatus(sessionId, simRunStatus);
+  }, [sessionId, simRunStatus, setSessionRunStatus]);
+
+  useEffect(() => {
+    return () => {
+      if (gromacsSavedTimerRef.current) clearTimeout(gromacsSavedTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (!sessionId) return;
-    setSelectedMolecule(null);
+    // Don't reset selectedMolecule immediately — wait for the config to determine the
+    // correct molecule file. This prevents a flash where the viewer unmounts (cancelling
+    // any in-progress NGL load) only to remount moments later with the same file.
+    let cancelled = false;
+    cfgRef.current = {};
+    setMoleculeLoading(true);
 
     getSessionConfig(sessionId)
       .then((r) => {
+        if (cancelled) return;
         setCfg(r.config);
+        cfgRef.current = r.config;
 
         // Derive work_dir and molecule file from the config (authoritative)
         const run = (r.config.run ?? {}) as Record<string, unknown>;
@@ -1596,28 +2023,84 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
 
         if (molFile && workDir) {
           getFileContent(sessionId, `${workDir}/${molFile}`)
-            .then((content) =>
-              setSelectedMolecule({ content, name: molFile.split("/").pop() ?? molFile })
-            )
-            .catch(() => {});
+            .then((content) => {
+              if (!cancelled) setSelectedMolecule({ content, name: molFile.split("/").pop() ?? molFile });
+            })
+            .catch(() => { if (!cancelled) setSelectedMolecule(null); })
+            .finally(() => { if (!cancelled) setMoleculeLoading(false); });
+        } else {
+          setSelectedMolecule(null);
+          setMoleculeLoading(false);
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) {
+          setSelectedMolecule(null);
+          setMoleculeLoading(false);
+        }
+      });
+    return () => { cancelled = true; };
   }, [sessionId]);
+
+  // Keep action button state in sync with the real mdrun process lifecycle.
+  useEffect(() => {
+    if (!sessionId) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const pollStatus = async () => {
+      if (simRunStatusRef.current === "finished" || simRunStatusRef.current === "failed") return;
+      try {
+        const status = await getSimulationStatus(sessionId);
+        if (cancelled) return;
+        const mappedStatus: "idle" | "running" | "finished" | "failed" | "setting_up" =
+          status.status
+            ?? (status.running
+              ? "running"
+              : (simRunStatusRef.current === "running" || simRunStatusRef.current === "setting_up" ? "finished" : "idle"));
+        setSimRunStatus(mappedStatus);
+        if (mappedStatus === "failed") setSimExitCode(status.exit_code ?? null);
+        if (mappedStatus === "finished") setSimExitCode(status.exit_code ?? 0);
+        if (mappedStatus === "running") {
+          setSimStartedAt((prev) => prev ?? Date.now());
+        }
+        setSimState(status.running ? "running" : "idle");
+        if (!status.running) setPauseConfirmOpen(false);
+      } catch {
+        // ignore transient polling errors
+      }
+    };
+
+    void pollStatus();
+    if (simRunStatus === "running" || simRunStatus === "setting_up") {
+      timer = setInterval(() => { void pollStatus(); }, 2000);
+    }
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+    };
+  }, [sessionId, simRunStatus]);
 
   const handleChange = (dotKey: string, value: unknown) => {
     const [section, ...rest] = dotKey.split(".");
-    setCfg((c) => {
-      const setDeep = (obj: Record<string, unknown>, parts: string[]): Record<string, unknown> => {
-        const [head, ...tail] = parts;
-        return tail.length === 0
-          ? { ...obj, [head]: value }
-          : { ...obj, [head]: setDeep((obj[head] as Record<string, unknown>) ?? {}, tail) };
-      };
-      const next = { ...c, [section]: setDeep((c[section] as Record<string, unknown>) ?? {}, rest) };
-      cfgRef.current = next;
-      return next;
-    });
+    const setDeep = (
+      obj: Record<string, unknown>,
+      parts: string[],
+      nextValue: unknown
+    ): Record<string, unknown> => {
+      const [head, ...tail] = parts;
+      if (!head) return obj;
+      return tail.length === 0
+        ? { ...obj, [head]: nextValue }
+        : { ...obj, [head]: setDeep((obj[head] as Record<string, unknown>) ?? {}, tail, nextValue) };
+    };
+
+    const current = cfgRef.current;
+    const next = { ...current, [section]: setDeep((current[section] as Record<string, unknown>) ?? {}, rest, value) };
+    // Keep cfgRef in sync immediately so saves triggered in the same event tick
+    // (e.g., select/toggle changes) do not persist stale config.
+    cfgRef.current = next;
+    setCfg(next);
   };
 
   const handleSave = useCallback(async () => {
@@ -1626,17 +2109,39 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
     await generateSessionFiles(sessionId).catch(() => {});
   }, [sessionId]);
 
+  const handleGromacsSave = useCallback(async () => {
+    if (!sessionId) return;
+    const seq = ++gromacsSaveSeqRef.current;
+    if (gromacsSavedTimerRef.current) {
+      clearTimeout(gromacsSavedTimerRef.current);
+      gromacsSavedTimerRef.current = null;
+    }
+    setGromacsSaveState("saving");
+    await handleSave();
+    if (seq !== gromacsSaveSeqRef.current) return;
+    setGromacsSaveState("saved");
+    gromacsSavedTimerRef.current = setTimeout(() => {
+      setGromacsSaveState("idle");
+    }, 1000);
+  }, [handleSave, sessionId]);
+
   const handleStartMD = async () => {
-    if (!sessionId || simState !== "idle") return;
+    if (!sessionId || simRunStatus === "running" || simRunStatus === "setting_up" || simRunStatus === "finished") return;
     setSimState("setting_up");
+    setSimRunStatus("setting_up");
+    setSimExitCode(null);
+    setSimStartedAt(null);
     try {
       const result = await startSimulation(sessionId);
       appendSSEEvent({ type: "text_delta", text: `Simulation started (PID ${result.pid}). Output files: ${Object.values(result.expected_files).join(", ")}` });
       appendSSEEvent({ type: "agent_done", final_text: "" });
       setSimState("running");
+      setSimRunStatus("running");
+      setSimStartedAt(Date.now());
     } catch (err) {
       appendSSEEvent({ type: "error", message: `Failed to start simulation: ${err}` });
       setSimState("idle");
+      setSimRunStatus("failed");
     }
   };
 
@@ -1647,6 +2152,8 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
       await stopSimulation(sessionId);
     } catch { /* ignore */ }
     setSimState("idle");
+    setSimRunStatus("idle");
+    setSimStartedAt(null);
   };
 
   const handleSelectMolecule = async (m: { content: string; name: string }) => {
@@ -1662,6 +2169,7 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
       system: { ...((cfg.system as Record<string, unknown>) ?? {}), coordinates: m.name },
     };
     setCfg(updatedCfg);
+    cfgRef.current = updatedCfg;
     await updateSessionConfig(sessionId, updatedCfg).catch(() => {});
     await generateSessionFiles(sessionId).catch(() => {});
   };
@@ -1672,12 +2180,21 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
     nickname: string,
     seededFiles: string[],
   ) => {
+    const structExts = new Set(["pdb", "gro", "mol2", "xyz"]);
+    const structFile = seededFiles.find((f) => structExts.has(f.split(".").pop()?.toLowerCase() ?? ""));
+
+    // Add session to the sessions list with selected_molecule already set so the
+    // sessionId-change useEffect can find it and skip the null fallback.
+    addSession({
+      session_id: id,
+      work_dir: workDir,
+      nickname,
+      selected_molecule: structFile ?? "",
+      run_status: "idle",
+    });
     setSession(id, { method: "", system: "", gromacs: "", plumed_cvs: "", workDir });
     onSessionCreated(id, workDir, nickname);
 
-    // Auto-select the first seeded structure file and persist to session.json
-    const structExts = new Set(["pdb", "gro", "mol2", "xyz"]);
-    const structFile = seededFiles.find((f) => structExts.has(f.split(".").pop()?.toLowerCase() ?? ""));
     if (structFile) {
       setActiveTab("molecule");
       try {
@@ -1720,33 +2237,49 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
   }
 
   const tabContent: Record<string, React.ReactNode> = {
-    progress: <ProgressTab sessionId={sessionId} />,
+    progress: (
+      <ProgressTab
+        sessionId={sessionId}
+        runStatus={simRunStatus}
+        exitCode={simExitCode}
+        totalSteps={Number(((cfg.method as Record<string, unknown> | undefined)?.nsteps ?? 0))}
+        runStartedAt={simStartedAt}
+      />
+    ),
     molecule: (
       <MoleculeTab
         sessionId={sessionId}
         cfg={cfg}
         selectedMolecule={selectedMolecule}
+        moleculeLoading={moleculeLoading}
         onSelectMolecule={handleSelectMolecule}
         onMoleculeDeleted={(name) => {
           if (selectedMolecule?.name === name) setSelectedMolecule(null);
         }}
       />
     ),
-    gromacs:  <GromacsTab cfg={cfg} onChange={handleChange} onSave={handleSave} />,
+    gromacs:  <GromacsTab cfg={cfg} onChange={handleChange} onSave={handleGromacsSave} saveState={gromacsSaveState} runStatus={simRunStatus} />,
     method:   <MethodTab sessionId={sessionId} cfg={cfg} onChange={handleChange} onSave={handleSave} />,
   };
+  const actionState: "idle" | "setting_up" | "running" | "finished" = simRunStatus === "running"
+    ? "running"
+    : simRunStatus === "setting_up"
+      ? "setting_up"
+      : simRunStatus === "finished"
+        ? "finished"
+        : "idle";
 
   return (
     <div className="flex-1 flex flex-col bg-gray-950 h-full min-w-0">
       <PillTabs active={activeTab} onChange={setActiveTab} />
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto [scrollbar-gutter:stable]">
         {tabContent[activeTab]}
       </div>
 
       {/* Simulation action button */}
       <div className="flex-shrink-0 p-4 border-t border-gray-800 bg-gray-900/50">
-        {simState === "idle" && (
+        {actionState === "idle" && (
           <button
             onClick={handleStartMD}
             className="w-full flex items-center justify-center gap-2 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold rounded-xl transition-all shadow-lg shadow-blue-900/30 text-sm"
@@ -1755,7 +2288,16 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
             Start MD Simulation
           </button>
         )}
-        {simState === "setting_up" && (
+        {actionState === "finished" && (
+          <button
+            disabled
+            className="w-full flex items-center justify-center gap-2 py-3 bg-emerald-900/40 text-emerald-300 font-semibold rounded-xl text-sm cursor-not-allowed border border-emerald-800/50"
+          >
+            <CheckCircle2 size={16} />
+            Simulation Finished
+          </button>
+        )}
+        {actionState === "setting_up" && (
           <button
             disabled
             className="w-full flex items-center justify-center gap-2 py-3 bg-gray-700 text-gray-300 font-semibold rounded-xl text-sm cursor-not-allowed"
@@ -1764,7 +2306,7 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
             Setting up…
           </button>
         )}
-        {simState === "running" && (
+        {actionState === "running" && (
           <button
             onClick={() => setPauseConfirmOpen(true)}
             className="w-full flex items-center justify-center gap-2 py-3 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white font-semibold rounded-xl transition-all shadow-lg shadow-amber-900/30 text-sm"

@@ -228,7 +228,7 @@ def _make_session_config_tools(work_dir: str, session):
 
     @tool
     def update_session_config(updates_json: str) -> str:
-        """Apply PLUMED / CV settings to this session's config.yaml.
+        """Apply PLUMED / CV settings to this session-root config.yaml.
         updates_json: JSON object with OmegaConf dot-key → value pairs.
         Example: {"plumed.collective_variables.phi.atoms": [5, 7, 9, 15]}
         Only modifies the current session's config — never touches other sessions.
@@ -246,7 +246,7 @@ def _make_session_config_tools(work_dir: str, session):
                     applied.append(key)
                 except Exception as e:
                     return json.dumps({"error": f"Failed to set {key}: {e}"})
-            cfg_path = wd / "config.yaml"
+            cfg_path = wd.parent / "config.yaml"
             OmegaConf.save(cfg, str(cfg_path))
             return json.dumps({"updated": True, "applied_keys": applied})
         except Exception as e:

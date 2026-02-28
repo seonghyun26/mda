@@ -4,6 +4,17 @@ A Claude Opus 4.6-powered agent for running enhanced sampling molecular dynamics
 
 ---
 
+## Prerequisites
+
+| Software | Install |
+|---|---|
+| Python 3.10+ | `conda create -n amd python=3.11` |
+| Docker (daemon running) | [docs.docker.com](https://docs.docker.com/get-docker/) — pulls `gromacs-plumed:latest` automatically |
+| Anthropic API key | `export ANTHROPIC_API_KEY=sk-ant-...` |
+| WandB account (optional) | Set key via the **Information** button in the web UI |
+
+---
+
 ## Quick Start
 
 > **Requires Docker daemon running** — GROMACS and PLUMED run inside a Docker container (`gromacs-plumed:latest`).
@@ -143,17 +154,6 @@ Switch between simulation methods (MD, Metadynamics, Umbrella Sampling). For Met
 - Use **Suggest CVs** to ask the AI agent to recommend collective variables based on the molecule structure
 
 Settings are saved automatically when you change any field.
-
----
-
-## Prerequisites
-
-| Software | Install |
-|---|---|
-| Python 3.10+ | `conda create -n amd python=3.11` |
-| Docker (daemon running) | [docs.docker.com](https://docs.docker.com/get-docker/) — pulls `gromacs-plumed:latest` automatically |
-| Anthropic API key | `export ANTHROPIC_API_KEY=sk-ant-...` |
-| WandB account (optional) | Set key via the **Information** button in the web UI |
 
 ---
 

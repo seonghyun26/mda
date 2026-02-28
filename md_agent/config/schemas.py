@@ -92,6 +92,7 @@ class GromacsSchema(BaseModel):
     pcoupl: str = "Parrinello-Rahman"
     constraints: str = "h-bonds"
     nstenergy: int = Field(gt=0)
+    rlist: float = Field(gt=0, description="nm")
     rcoulomb: float = Field(gt=0, description="nm")
     rvdw: float = Field(gt=0, description="nm")
 

@@ -15,6 +15,7 @@ export interface SessionSummary {
   work_dir: string;
   nickname: string;
   selected_molecule?: string;
+  run_status?: "idle" | "running" | "setting_up" | "finished" | "failed";
 }
 
 interface SessionState {
@@ -33,6 +34,7 @@ interface SessionState {
   removeSession: (sessionId: string) => void;
   updateSessionNickname: (sessionId: string, nickname: string) => void;
   setSessionMolecule: (sessionId: string, molecule: string) => void;
+  setSessionRunStatus: (sessionId: string, runStatus: SessionSummary["run_status"]) => void;
   addUserMessage: (text: string) => void;
   appendSSEEvent: (event: SSEEvent) => void;
   updateProgress: (progress: SimProgress) => void;
@@ -45,6 +47,7 @@ function newAssistantMessage(): ChatMessage {
     role: "assistant",
     blocks: [],
     timestamp: Date.now(),
+    finalized: false,
   };
 }
 
@@ -96,6 +99,13 @@ export const useSessionStore = create<SessionState>((set) => ({
       ),
     })),
 
+  setSessionRunStatus: (sessionId, runStatus) =>
+    set((state) => ({
+      sessions: state.sessions.map((s) =>
+        s.session_id === sessionId ? { ...s, run_status: runStatus } : s
+      ),
+    })),
+
   addUserMessage: (text) =>
     set((state) => ({
       messages: [
@@ -116,7 +126,7 @@ export const useSessionStore = create<SessionState>((set) => ({
 
       const ensureAssistant = (): ChatMessage => {
         const last = messages[messages.length - 1];
-        if (last && last.role === "assistant") return last;
+        if (last && last.role === "assistant" && !last.finalized) return last;
         const msg = newAssistantMessage();
         messages.push(msg);
         return msg;
@@ -189,8 +199,24 @@ export const useSessionStore = create<SessionState>((set) => ({
             },
           };
 
-        case "agent_done":
-          return { isStreaming: false };
+        case "agent_done": {
+          const last = messages[messages.length - 1];
+          if (last && last.role === "assistant") {
+            const idx = messages.length - 1;
+            const blocks = [...last.blocks];
+            const finalText = (event.final_text ?? "").trim();
+            if (finalText) {
+              const lastBlock = blocks[blocks.length - 1];
+              if (lastBlock && lastBlock.kind === "text") {
+                blocks[blocks.length - 1] = { kind: "text", content: `${lastBlock.content}\n${finalText}` };
+              } else {
+                blocks.push({ kind: "text", content: finalText });
+              }
+            }
+            messages[idx] = { ...last, blocks, finalized: true };
+          }
+          return { messages, isStreaming: false };
+        }
 
         case "error": {
           const msg = ensureAssistant();
@@ -198,6 +224,7 @@ export const useSessionStore = create<SessionState>((set) => ({
           messages[idx] = {
             ...msg,
             blocks: [...msg.blocks, { kind: "error" as const, content: event.message }],
+            finalized: true,
           };
           return { messages, isStreaming: false };
         }

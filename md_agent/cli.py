@@ -186,7 +186,7 @@ _EXAMPLES = {
             "system=ala_dipeptide",
             "method=ala_metadynamics",
             "plumed/collective_variables=ala_dipeptide",
-            "gromacs=ala_vacuum",
+            "gromacs=vacuum",
         ],
     },
 }

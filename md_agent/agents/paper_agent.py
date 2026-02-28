@@ -134,7 +134,7 @@ def _make_config_tools(work_dir: str, session):
 
     @tool
     def update_session_config(updates_json: str) -> str:
-        """Apply MD settings to this session's config.yaml and regenerate md.mdp.
+        """Apply MD settings to this session-root config.yaml and regenerate md.mdp.
         updates_json: JSON object with OmegaConf dot-key → value pairs.
         Example: {"gromacs.temperature": 300, "gromacs.nsteps": 5000000, "system.forcefield": "amber99sb-ildn"}
         Only modifies the config of the current session — never touches other sessions.
@@ -152,8 +152,8 @@ def _make_config_tools(work_dir: str, session):
                     applied.append(key)
                 except Exception as e:
                     return json.dumps({"error": f"Failed to set {key}: {e}"})
-            # Save to this session's own config.yaml
-            cfg_path = wd / "config.yaml"
+            # Save to this session root's config.yaml (sibling of data/)
+            cfg_path = wd.parent / "config.yaml"
             OmegaConf.save(cfg, str(cfg_path))
             # Regenerate md.mdp from updated config
             from md_agent.config.hydra_utils import generate_mdp_from_config

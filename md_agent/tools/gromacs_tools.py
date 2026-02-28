@@ -99,8 +99,21 @@ class GROMACSRunner:
         return result
 
     def _cleanup(self) -> None:
-        if self._mdrun_proc and self._mdrun_proc.poll() is None:
-            self._mdrun_proc.terminate()
+        proc = self._mdrun_proc
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+        except Exception:
+            pass
+        finally:
+            self._mdrun_proc = None
 
     # ── Public API ──────────────────────────────────────────────────────
 
@@ -151,7 +164,6 @@ class GROMACSRunner:
             "mdrun", "-v",
             "-s", tpr_file,
             "-deffnm", output_prefix,
-            "-ntmpi", "1",
             "-ntomp", str(n_cores),
         ]
         if plumed_file:
@@ -213,12 +225,18 @@ class GROMACSRunner:
         work_dir: str = ".",
     ) -> dict[str, Any]:
         """Run an arbitrary gmx analysis subcommand (blocking)."""
-        orig_work_dir = self.work_dir
-        self.work_dir = Path(work_dir)
-        result = self._run([subcommand] + args, stdin_text=stdin_text)
-        self.work_dir = orig_work_dir
-
-        return result.to_dict()
+        wd = Path(work_dir)
+        cmd = self._build_cmd([subcommand] + args, wd)
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE if stdin_text else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(wd),
+            text=True,
+        )
+        stdout, stderr = proc.communicate(input=stdin_text)
+        return GMXResult(proc.returncode, stdout, stderr).to_dict()
 
     def check_gromacs_energy(
         self,

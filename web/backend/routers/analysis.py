@@ -12,13 +12,13 @@ from web.backend.analysis_utils import (
     fes_dat_to_heatmap,
     get_log_progress,
 )
-from web.backend.session_manager import get_session
+from web.backend.session_manager import get_or_restore_session
 
 router = APIRouter()
 
 
 def _require_session(session_id: str):
-    session = get_session(session_id)
+    session = get_or_restore_session(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
     return session

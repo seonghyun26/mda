@@ -1,6 +1,5 @@
-# GROMACS MDP parameters for alanine dipeptide in a vacuum periodic box
-# (no water; dodecahedron box with PME electrostatics)
-# Matches the box setup produced by prepare.sh.
+# GROMACS MDP parameters for CLN025/chignolin in a vacuum periodic box
+# (no water; cubic box with PME electrostatics).
 
 integrator: md
 dt: 0.002
@@ -16,7 +15,7 @@ tau_t:
 ref_t:
   - 300
 
-# No pressure coupling (vacuum box)
+# No pressure coupling in vacuum
 pcoupl: "no"
 
 # Box setup (used by editconf; not an MDP key)
@@ -25,8 +24,9 @@ box_clearance: 1.2      # nm — minimum distance between molecule and box edge
 # Neighbor searching
 cutoff_scheme: Verlet
 nstlist: 10
-rcoulomb: 1.2              # nm
-rvdw: 1.2                  # nm
+rcoulomb: 1.0           # nm
+rvdw: 1.0               # nm
+rlist: 1.0              # nm
 
 # PME electrostatics (safe for periodic vacuum box)
 coulombtype: PME

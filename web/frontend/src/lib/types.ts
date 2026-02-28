@@ -46,6 +46,7 @@ export interface ChatMessage {
   role: MessageRole;
   blocks: MessageBlock[];
   timestamp: number;
+  finalized?: boolean;
 }
 
 export interface SimProgress {

@@ -15,6 +15,17 @@ interface Props {
 
 // ── Session list item ──────────────────────────────────────────────────
 
+function statusDotClass(runStatus: string | undefined): string {
+  const base = "w-2 h-2 rounded-full flex-shrink-0";
+  switch (runStatus) {
+    case "setting_up": return `${base} bg-amber-400 animate-pulse`;
+    case "running":    return `${base} bg-emerald-400 animate-pulse`;
+    case "finished":   return `${base} bg-blue-400`;
+    case "failed":     return `${base} bg-red-500`;
+    default:           return `${base} bg-gray-700`;
+  }
+}
+
 function SessionItem({
   s,
   isActive,
@@ -22,7 +33,7 @@ function SessionItem({
   onSaved,
   onDeleted,
 }: {
-  s: { session_id: string; work_dir: string; nickname: string };
+  s: { session_id: string; work_dir: string; nickname: string; run_status?: string };
   isActive: boolean;
   onSelect: () => void;
   onSaved: (nick: string) => void;
@@ -137,7 +148,7 @@ function SessionItem({
         }}
       >
         <div className="flex items-center gap-1.5 mb-0.5">
-          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isActive ? "bg-blue-500" : "bg-transparent"}`} />
+          <span className={statusDotClass(s.run_status)} />
           {editing ? (
             <div className="flex items-center gap-1 flex-1 min-w-0" onClick={(e) => e.stopPropagation()}>
               <input
