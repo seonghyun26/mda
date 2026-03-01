@@ -160,7 +160,7 @@ async def create_session_endpoint(req: CreateSessionRequest):
         "nickname": session.nickname,
         "work_dir": session.work_dir,
         "status": "active",
-        "run_status": "idle",
+        "run_status": "standby",
         "updated_at": datetime.utcnow().isoformat(),
     }
     (Path(req.work_dir).parent / "session.json").write_text(json.dumps(meta, indent=2))
@@ -195,7 +195,7 @@ async def list_sessions_endpoint(username: str = ""):
                     continue
                 if data.get("status") == "inactive":
                     continue
-                run_status = data.get("run_status", "idle")
+                run_status = data.get("run_status", "standby")
                 # If session.json says "running", infer actual status from md.log (e.g. after refresh)
                 if run_status == "running":
                     work_dir_resolved = Path(data["work_dir"]).resolve()
@@ -218,6 +218,30 @@ async def list_sessions_endpoint(username: str = ""):
 
     sessions.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
     return {"sessions": sessions}
+
+
+@router.get("/sessions/{session_id}/run-status")
+async def get_session_run_status(session_id: str):
+    """Read run_status from session.json on disk. If still 'running', verify via md.log."""
+    from web.backend.session_manager import infer_run_status_from_disk
+    outputs_root = Path("outputs")
+    for sf in outputs_root.glob("*/*/session.json"):
+        try:
+            data = json.loads(sf.read_text())
+            if data.get("session_id") != session_id:
+                continue
+            run_status = data.get("run_status", "standby")
+            if run_status == "running":
+                work_dir = Path(data["work_dir"]).resolve()
+                inferred = infer_run_status_from_disk(sf.parent, work_dir)
+                if inferred in ("finished", "failed"):
+                    run_status = inferred
+                    data["run_status"] = inferred
+                    sf.write_text(json.dumps(data, indent=2))
+            return {"run_status": run_status}
+        except Exception:
+            continue
+    return {"run_status": "standby"}
 
 
 class NicknameRequest(BaseModel):

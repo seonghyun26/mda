@@ -201,7 +201,7 @@ def get_simulation_status(session_id: str) -> dict:
     """Return current mdrun lifecycle status for this session."""
     session = _sessions.get(session_id)
     if not session:
-        return {"running": False, "status": "idle"}
+        return {"running": False, "status": "standby"}
     try:
         runner = getattr(session.agent, "_gmx", None)
         cfg = getattr(session.agent, "cfg", None)
@@ -234,7 +234,7 @@ def get_simulation_status(session_id: str) -> dict:
                     status["pid"] = proc.pid
                 return status
             if proc is None:
-                return {"running": False, "status": "idle"}
+                return {"running": False, "status": "standby"}
             rc = proc.poll()
             if rc is None:
                 return {"running": True, "status": "running", "pid": proc.pid}
@@ -252,7 +252,7 @@ def get_simulation_status(session_id: str) -> dict:
             }
     except Exception:
         pass
-    return {"running": False, "status": "idle"}
+    return {"running": False, "status": "standby"}
 
 
 def restore_session(

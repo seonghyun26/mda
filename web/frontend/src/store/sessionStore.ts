@@ -15,7 +15,7 @@ export interface SessionSummary {
   work_dir: string;
   nickname: string;
   selected_molecule?: string;
-  run_status?: "idle" | "running" | "setting_up" | "finished" | "failed";
+  run_status?: "standby" | "running" | "finished" | "failed";
 }
 
 interface SessionState {

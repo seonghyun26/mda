@@ -4,12 +4,12 @@ import { useSessionStore } from "@/store/sessionStore";
 import { Activity } from "lucide-react";
 
 export default function SimulationStatus({
-  runStatus = "idle",
+  runStatus = "standby",
   exitCode = null,
   progress,
   totalSteps = 0,
 }: {
-  runStatus?: "idle" | "running" | "finished" | "failed" | "setting_up";
+  runStatus?: "standby" | "running" | "finished" | "failed";
   exitCode?: number | null;
   progress?: { step: number; time_ps: number; ns_per_day: number } | null;
   totalSteps?: number;
@@ -42,7 +42,7 @@ export default function SimulationStatus({
     );
   }
 
-  if (!src || runStatus === "idle") return null;
+  if (!src || runStatus === "standby") return null;
 
   const step = Number.isFinite(src.step) ? src.step : 0;
   const total = Number.isFinite(src.totalSteps) ? src.totalSteps : 0;

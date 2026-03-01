@@ -135,7 +135,7 @@ async def start_simulation(session_id: str):
     if not session:
         raise HTTPException(404, "Session not found")
 
-    _persist_run_status(session, "setting_up")
+    _persist_run_status(session, "running")
 
     work_dir = Path(session.work_dir)
     cfg = session.agent.cfg
@@ -325,4 +325,7 @@ async def stop_simulation(session_id: str):
     """Terminate a running mdrun process."""
     from web.backend.session_manager import stop_session_simulation
     stopped = stop_session_simulation(session_id)
+    session = get_session(session_id)
+    if session:
+        _persist_run_status(session, "standby")
     return {"stopped": stopped}

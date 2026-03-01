@@ -57,12 +57,18 @@ export async function listSessions(username: string): Promise<{
     session_id: string;
     work_dir: string;
     nickname: string;
-    run_status?: string;
+    run_status?: "standby" | "running" | "finished" | "failed";
     selected_molecule?: string;
     updated_at?: string;
   }[];
 }> {
   return json(await fetch(`${BASE}/sessions?username=${encodeURIComponent(username)}`));
+}
+
+export async function getSessionRunStatus(
+  sessionId: string
+): Promise<{ run_status: string }> {
+  return json(await fetch(`${BASE}/sessions/${sessionId}/run-status`));
 }
 
 export async function restoreSession(
@@ -245,7 +251,7 @@ export async function startSimulation(
 
 export async function getSimulationStatus(
   sessionId: string
-): Promise<{ running: boolean; status?: "idle" | "running" | "finished" | "failed"; pid?: number; exit_code?: number }> {
+): Promise<{ running: boolean; status?: "standby" | "running" | "finished" | "failed"; pid?: number; exit_code?: number }> {
   return json(await fetch(`${BASE}/sessions/${sessionId}/simulate/status`));
 }
 

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { FlaskConical, Plus, LogOut, Pencil, Check, X, Settings, Trash2, Info, Eye, EyeOff } from "lucide-react";
 import { useSessionStore } from "@/store/sessionStore";
 import { logout, getUsername } from "@/lib/auth";
-import { updateNickname, restoreSession, deleteSession, getApiKeys, setApiKey } from "@/lib/api";
+import { updateNickname, restoreSession, deleteSession, getApiKeys, setApiKey, getSessionRunStatus } from "@/lib/api";
 import { useRouter } from "next/navigation";
 
 interface Props {
@@ -18,11 +18,10 @@ interface Props {
 function statusDotClass(runStatus: string | undefined): string {
   const base = "w-2 h-2 rounded-full flex-shrink-0";
   switch (runStatus) {
-    case "setting_up": return `${base} bg-amber-400 animate-pulse`;
-    case "running":    return `${base} bg-emerald-400 animate-pulse`;
-    case "finished":   return `${base} bg-blue-400`;
-    case "failed":     return `${base} bg-red-500`;
-    default:           return `${base} bg-gray-700`;
+    case "running":  return `${base} bg-green-400 animate-pulse`;
+    case "finished": return `${base} bg-blue-400`;
+    case "failed":   return `${base} bg-red-500`;
+    default:         return `${base} bg-gray-600`;
   }
 }
 
@@ -32,12 +31,14 @@ function SessionItem({
   onSelect,
   onSaved,
   onDeleted,
+  onRunStatusRead,
 }: {
   s: { session_id: string; work_dir: string; nickname: string; run_status?: string };
   isActive: boolean;
   onSelect: () => void;
   onSaved: (nick: string) => void;
   onDeleted: () => void;
+  onRunStatusRead: (runStatus: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -144,6 +145,9 @@ function SessionItem({
         onClick={async () => {
           if (editing || confirming) return;
           await restoreSession(s.session_id, s.work_dir, s.nickname);
+          getSessionRunStatus(s.session_id)
+            .then(({ run_status }) => onRunStatusRead(run_status))
+            .catch(() => {});
           onSelect();
         }}
       >
@@ -379,7 +383,7 @@ function ProfileSection({ username, onLogout }: { username: string; onLogout: ()
 
 export default function SessionSidebar({ onNewSession, onSelectSession, onSessionDeleted }: Props) {
   const router = useRouter();
-  const { sessions, sessionId, fetchSessions, switchSession, updateSessionNickname, removeSession } =
+  const { sessions, sessionId, fetchSessions, switchSession, updateSessionNickname, removeSession, setSessionRunStatus } =
     useSessionStore();
   const username = getUsername();
 
@@ -430,6 +434,7 @@ export default function SessionSidebar({ onNewSession, onSelectSession, onSessio
                 onSelect={() => { switchSession(s.session_id, s.work_dir); onSelectSession?.(s.session_id); }}
                 onSaved={(nick) => updateSessionNickname(s.session_id, nick)}
                 onDeleted={() => { removeSession(s.session_id); onSessionDeleted?.(s.session_id); }}
+                onRunStatusRead={(rs) => setSessionRunStatus(s.session_id, rs as "standby" | "running" | "finished" | "failed")}
               />
             ))}
           </div>

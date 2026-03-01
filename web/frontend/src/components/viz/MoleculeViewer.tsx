@@ -56,9 +56,6 @@ interface RepState {
   surface: boolean;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type RepHandles = Record<keyof RepState, any | null>;
-
 const REP_LABELS: { key: keyof RepState; label: string }[] = [
   { key: "ball",    label: "Ball"    },
   { key: "stick",   label: "Stick"   },
@@ -66,46 +63,21 @@ const REP_LABELS: { key: keyof RepState; label: string }[] = [
   { key: "surface", label: "Surface" },
 ];
 
-const NULL_HANDLES: RepHandles = { ball: null, stick: null, ribbon: null, surface: null };
-
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function addRepresentations(component: any, reps: RepState): RepHandles {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const safeAdd = (name: string, params: Record<string, unknown>): any | null => {
-    try { return component.addRepresentation(name, params); } catch { return null; }
-  };
-
-  const ball = safeAdd("spacefill", {
-    colorScheme: "element",
-    radiusScale: 0.2,
-    visible: reps.ball,
-  });
-
-  const stick = safeAdd("licorice", {
-    colorScheme: "element",
-    visible: reps.stick,
-  });
-
-  // Prefer protein cartoon; fall back to polymer, then whole structure.
-  const ribbon = (() => {
-    const r =
-      safeAdd("cartoon", { sele: "protein", colorScheme: "residueindex", visible: reps.ribbon }) ??
-      safeAdd("cartoon", { sele: "polymer", colorScheme: "residueindex", visible: reps.ribbon }) ??
-      safeAdd("cartoon", { colorScheme: "residueindex", visible: reps.ribbon });
-    return r;
-  })();
-
-  const surface = safeAdd("surface", { color: "white", opacity: 0.2, visible: reps.surface });
-
-  return { ball, stick, ribbon, surface };
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function updateRepVisibility(handles: RepHandles, reps: RepState, stage?: any) {
-  for (const key of Object.keys(reps) as (keyof RepState)[]) {
-    try { handles[key]?.setVisibility(reps[key]); } catch { /* ignore */ }
+function applyRepresentations(component: any, reps: RepState) {
+  component.removeAllRepresentations();
+  if (reps.ball) {
+    component.addRepresentation("spacefill", { colorScheme: "element", radiusScale: 0.2 });
   }
-  try { stage?.viewer?.requestRender?.(); } catch { /* ignore */ }
+  if (reps.stick) {
+    component.addRepresentation("licorice", { colorScheme: "element" });
+  }
+  if (reps.ribbon) {
+    component.addRepresentation("cartoon", { sele: "protein", colorScheme: "residueindex" });
+  }
+  if (reps.surface) {
+    component.addRepresentation("surface", { color: "white", opacity: 0.1 });
+  }
 }
 
 const DEFAULT_REPS: RepState = {
@@ -116,22 +88,28 @@ const DEFAULT_REPS: RepState = {
 };
 
 export default function MoleculeViewer({ fileContent, fileName, onClose, inline = false }: Props) {
-  const containerRef      = useRef<HTMLDivElement>(null);
+  const containerRef     = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const stageRef          = useRef<any>(null);
+  const stageRef         = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const componentRef      = useRef<any>(null);
-  const handlesRef        = useRef<RepHandles>(NULL_HANDLES);
+  const componentRef     = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const initialOrientRef = useRef<any>(null);
+  const repsRef          = useRef<RepState>(DEFAULT_REPS);
 
   const [ready, setReady]           = useState(false);
   const [error, setError]           = useState<string | null>(null);
   const [reps, setReps]             = useState<RepState>(DEFAULT_REPS);
   const [structInfo, setStructInfo] = useState<{ atoms: number; residues: number } | null>(null);
 
-  // Toggle visibility via NGL handles when reps state changes
+  // Keep repsRef in sync so the load effect never reads stale state
+  useEffect(() => { repsRef.current = reps; }, [reps]);
+
+  // Re-apply representations when toggles change
   useEffect(() => {
-    if (!componentRef.current || !stageRef.current) return;
-    updateRepVisibility(handlesRef.current, reps, stageRef.current);
+    if (!componentRef.current) return;
+    applyRepresentations(componentRef.current, reps);
+    try { stageRef.current?.viewer?.requestRender?.(); } catch { /* ignore */ }
   }, [reps]);
 
   // Load / reload structure when file content or name changes
@@ -152,7 +130,7 @@ export default function MoleculeViewer({ fileContent, fileName, onClose, inline 
         stageRef.current = null;
       }
       componentRef.current = null;
-      handlesRef.current = NULL_HANDLES;
+      initialOrientRef.current = null;
       containerRef.current.innerHTML = "";
 
       suppressNglDeprecationWarnings();
@@ -171,10 +149,14 @@ export default function MoleculeViewer({ fileContent, fileName, onClose, inline 
         .then((component: any) => {
           if (cancelled) return;
           componentRef.current = component;
+          try { applyRepresentations(component, repsRef.current); } catch { /* ignore */ }
           try {
-            handlesRef.current = addRepresentations(component, DEFAULT_REPS);
+            component.autoView(600);
+            // Capture orientation after the autoView animation completes
+            setTimeout(() => {
+              try { initialOrientRef.current = stage.viewerControls.getOrientation(); } catch { /* ignore */ }
+            }, 650);
           } catch { /* ignore */ }
-          try { component.autoView(400); } catch { /* ignore */ }
           setReady(true);
         })
         .catch((err: unknown) => {
@@ -225,16 +207,22 @@ export default function MoleculeViewer({ fileContent, fileName, onClose, inline 
         stageRef.current = null;
       }
       componentRef.current = null;
-      handlesRef.current = NULL_HANDLES;
+      initialOrientRef.current = null;
     };
   }, [fileContent, fileName]);
 
   const handleResetView = () => {
-    if (!componentRef.current) return;
-    try { componentRef.current.autoView(400); } catch { /* ignore */ }
+    console.log("[MoleculeViewer] Reset View clicked", { fileName, ready });
+    if (!stageRef.current) return;
+    if (initialOrientRef.current) {
+      stageRef.current.animationControls.orient(initialOrientRef.current, 800);
+    } else {
+      componentRef.current?.autoView(800);
+    }
   };
 
   const handleScreenshot = () => {
+    console.log("[MoleculeViewer] Screenshot clicked", { fileName, ready });
     if (!stageRef.current) return;
     stageRef.current
       .makeImage({ factor: 6, antialias: true, trim: false, transparent: true })
@@ -251,6 +239,20 @@ export default function MoleculeViewer({ fileContent, fileName, onClose, inline 
       });
   };
 
+  const handleRepToggle = (key: keyof RepState) => {
+    setReps((prev) => {
+      const next = !prev[key];
+      console.log("[MoleculeViewer] Representation toggle clicked", {
+        fileName,
+        representation: key,
+        previous: prev[key],
+        next,
+        ready,
+      });
+      return { ...prev, [key]: next };
+    });
+  };
+
   /** Toggle buttons shown to the right of the canvas */
   const repColumn = (
     <div className="flex flex-col gap-1.5 w-[148px] flex-shrink-0 pt-0.5">
@@ -262,7 +264,7 @@ export default function MoleculeViewer({ fileContent, fileName, onClose, inline 
         return (
           <button
             key={key}
-            onClick={() => setReps((r) => ({ ...r, [key]: !r[key] }))}
+            onClick={() => handleRepToggle(key)}
             disabled={!ready}
             className={`py-2 rounded-lg text-xs font-medium text-center transition-colors border disabled:opacity-40 ${
               on
@@ -358,7 +360,7 @@ export default function MoleculeViewer({ fileContent, fileName, onClose, inline 
                 return (
                   <button
                     key={key}
-                    onClick={() => setReps((r) => ({ ...r, [key]: !r[key] }))}
+                    onClick={() => handleRepToggle(key)}
                     disabled={!ready}
                     className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors border disabled:opacity-40 ${
                       on

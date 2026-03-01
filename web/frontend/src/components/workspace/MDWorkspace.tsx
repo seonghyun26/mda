@@ -552,7 +552,7 @@ function ProgressTab({
   runStartedAt,
 }: {
   sessionId: string;
-  runStatus: "idle" | "running" | "finished" | "failed" | "setting_up";
+  runStatus: "standby" | "running" | "finished" | "failed";
   exitCode: number | null;
   totalSteps: number;
   runStartedAt: number | null;
@@ -618,7 +618,7 @@ function ProgressTab({
 
   useEffect(() => {
     let cancelled = false;
-    const isActiveRun = runStatus === "running" || runStatus === "setting_up";
+    const isActiveRun = runStatus === "running";
     const tickNow = () => setNowMs(Date.now());
     const intervalNow = isActiveRun ? setInterval(tickNow, 1000) : null;
 
@@ -1235,12 +1235,12 @@ function GromacsTab({
   onChange: (k: string, v: unknown) => void;
   onSave: () => void;
   saveState: "idle" | "saving" | "saved";
-  runStatus: "idle" | "running" | "finished" | "failed" | "setting_up";
+  runStatus: "standby" | "running" | "finished" | "failed";
 }) {
   const gromacs = (cfg.gromacs ?? {}) as Record<string, unknown>;
   const method  = (cfg.method  ?? {}) as Record<string, unknown>;
   const system  = (cfg.system  ?? {}) as Record<string, unknown>;
-  const isLocked = runStatus !== "idle";
+  const isLocked = runStatus === "running" || runStatus === "finished";
 
   return (
     <div className="p-4 space-y-4">
@@ -1951,7 +1951,7 @@ interface Props {
   onNewSession: () => void;
 }
 
-type SimState = "idle" | "setting_up" | "running";
+type SimState = "standby" | "running";
 
 export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, onNewSession }: Props) {
   const [cfg, setCfg] = useState<Record<string, unknown>>({});
@@ -1959,8 +1959,8 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
   const [activeTab, setActiveTab] = useState("progress");
   const [selectedMolecule, setSelectedMolecule] = useState<{ content: string; name: string } | null>(null);
   const [moleculeLoading, setMoleculeLoading] = useState(false);
-  const [simState, setSimState] = useState<SimState>("idle");
-  const [simRunStatus, setSimRunStatus] = useState<"idle" | "running" | "finished" | "failed" | "setting_up">("idle");
+  const [simState, setSimState] = useState<SimState>("standby");
+  const [simRunStatus, setSimRunStatus] = useState<"standby" | "running" | "finished" | "failed">("standby");
   const [simExitCode, setSimExitCode] = useState<number | null>(null);
   const [simStartedAt, setSimStartedAt] = useState<number | null>(null);
   const [pauseConfirmOpen, setPauseConfirmOpen] = useState(false);
@@ -1973,8 +1973,8 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
   // Reset simulation state when switching sessions, preserving terminal states from the store
   useEffect(() => {
     const stored = sessionsRef.current.find((s) => s.session_id === sessionId)?.run_status;
-    const preserved = stored === "finished" || stored === "failed" ? stored : "idle";
-    setSimState("idle");
+    const preserved = stored === "finished" || stored === "failed" ? stored : "standby";
+    setSimState("standby");
     setSimRunStatus(preserved);
     setSimExitCode(null);
     setSimStartedAt(null);
@@ -2053,18 +2053,17 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
       try {
         const status = await getSimulationStatus(sessionId);
         if (cancelled) return;
-        const mappedStatus: "idle" | "running" | "finished" | "failed" | "setting_up" =
-          status.status
-            ?? (status.running
-              ? "running"
-              : (simRunStatusRef.current === "running" || simRunStatusRef.current === "setting_up" ? "finished" : "idle"));
+        const mappedStatus: "standby" | "running" | "finished" | "failed" =
+          status.status === "finished" ? "finished"
+            : status.status === "failed" ? "failed"
+            : status.running ? "running"
+            : simRunStatusRef.current === "running" ? "finished"
+            : "standby";
         setSimRunStatus(mappedStatus);
         if (mappedStatus === "failed") setSimExitCode(status.exit_code ?? null);
         if (mappedStatus === "finished") setSimExitCode(status.exit_code ?? 0);
-        if (mappedStatus === "running") {
-          setSimStartedAt((prev) => prev ?? Date.now());
-        }
-        setSimState(status.running ? "running" : "idle");
+        if (mappedStatus === "running") setSimStartedAt((prev) => prev ?? Date.now());
+        setSimState(status.running ? "running" : "standby");
         if (!status.running) setPauseConfirmOpen(false);
       } catch {
         // ignore transient polling errors
@@ -2072,7 +2071,7 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
     };
 
     void pollStatus();
-    if (simRunStatus === "running" || simRunStatus === "setting_up") {
+    if (simRunStatus === "running") {
       timer = setInterval(() => { void pollStatus(); }, 2000);
     }
     return () => {
@@ -2126,21 +2125,19 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
   }, [handleSave, sessionId]);
 
   const handleStartMD = async () => {
-    if (!sessionId || simRunStatus === "running" || simRunStatus === "setting_up" || simRunStatus === "finished") return;
-    setSimState("setting_up");
-    setSimRunStatus("setting_up");
+    if (!sessionId || simRunStatus === "running" || simRunStatus === "finished") return;
+    setSimState("running");
+    setSimRunStatus("running");
     setSimExitCode(null);
     setSimStartedAt(null);
     try {
       const result = await startSimulation(sessionId);
       appendSSEEvent({ type: "text_delta", text: `Simulation started (PID ${result.pid}). Output files: ${Object.values(result.expected_files).join(", ")}` });
       appendSSEEvent({ type: "agent_done", final_text: "" });
-      setSimState("running");
-      setSimRunStatus("running");
       setSimStartedAt(Date.now());
     } catch (err) {
       appendSSEEvent({ type: "error", message: `Failed to start simulation: ${err}` });
-      setSimState("idle");
+      setSimState("standby");
       setSimRunStatus("failed");
     }
   };
@@ -2151,8 +2148,8 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
     try {
       await stopSimulation(sessionId);
     } catch { /* ignore */ }
-    setSimState("idle");
-    setSimRunStatus("idle");
+    setSimState("standby");
+    setSimRunStatus("standby");
     setSimStartedAt(null);
   };
 
@@ -2190,7 +2187,7 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
       work_dir: workDir,
       nickname,
       selected_molecule: structFile ?? "",
-      run_status: "idle",
+      run_status: "standby",
     });
     setSession(id, { method: "", system: "", gromacs: "", plumed_cvs: "", workDir });
     onSessionCreated(id, workDir, nickname);
@@ -2261,13 +2258,10 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
     gromacs:  <GromacsTab cfg={cfg} onChange={handleChange} onSave={handleGromacsSave} saveState={gromacsSaveState} runStatus={simRunStatus} />,
     method:   <MethodTab sessionId={sessionId} cfg={cfg} onChange={handleChange} onSave={handleSave} />,
   };
-  const actionState: "idle" | "setting_up" | "running" | "finished" = simRunStatus === "running"
-    ? "running"
-    : simRunStatus === "setting_up"
-      ? "setting_up"
-      : simRunStatus === "finished"
-        ? "finished"
-        : "idle";
+  const actionState: "standby" | "running" | "finished" =
+    simRunStatus === "running" ? "running" :
+    simRunStatus === "finished" ? "finished" :
+    "standby";
 
   return (
     <div className="flex-1 flex flex-col bg-gray-950 h-full min-w-0">
@@ -2279,7 +2273,7 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
 
       {/* Simulation action button */}
       <div className="flex-shrink-0 p-4 border-t border-gray-800 bg-gray-900/50">
-        {actionState === "idle" && (
+        {actionState === "standby" && (
           <button
             onClick={handleStartMD}
             className="w-full flex items-center justify-center gap-2 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold rounded-xl transition-all shadow-lg shadow-blue-900/30 text-sm"
@@ -2295,15 +2289,6 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
           >
             <CheckCircle2 size={16} />
             Simulation Finished
-          </button>
-        )}
-        {actionState === "setting_up" && (
-          <button
-            disabled
-            className="w-full flex items-center justify-center gap-2 py-3 bg-gray-700 text-gray-300 font-semibold rounded-xl text-sm cursor-not-allowed"
-          >
-            <Loader2 size={16} className="animate-spin" />
-            Setting up…
           </button>
         )}
         {actionState === "running" && (
