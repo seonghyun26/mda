@@ -9,6 +9,7 @@ A Claude Opus 4.6-powered agent for running enhanced sampling molecular dynamics
 | Software | Install |
 |---|---|
 | Python 3.10+ | `conda create -n amd python=3.11` |
+| Node.js 18+ & npm | Required for the web UI. e.g. `nvm install 20 && nvm use 20` |
 | Docker (daemon running) | [docs.docker.com](https://docs.docker.com/get-docker/) — pulls `gromacs-plumed:latest` automatically |
 | Anthropic API key | `export ANTHROPIC_API_KEY=sk-ant-...` |
 | WandB account (optional) | Set key via the **Information** button in the web UI |

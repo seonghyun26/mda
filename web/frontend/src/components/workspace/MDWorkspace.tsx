@@ -405,13 +405,11 @@ function buildMolTreeGroups(molFiles: string[], originHint: string): MolTreeGrou
 // ── File preview helpers ────────────────────────────────────────────────
 
 const _BINARY_EXTS = new Set([".xtc", ".trr", ".edr", ".tpr", ".cpt", ".xdr", ".dms", ".gsd"]);
-const _VIEWER_EXTS = new Set([".pdb", ".gro"]);
 
-function canPreview(name: string): "viewer" | "text" | "binary" {
+function canPreview(name: string): "text" | "binary" {
   const ext = "." + (name.split(".").pop() ?? "").toLowerCase();
   if (_BINARY_EXTS.has(ext)) return "binary";
-  if (_VIEWER_EXTS.has(ext)) return "viewer";
-  return "text";  // all other extensions treated as plain text
+  return "text";
 }
 
 // ── File preview modal ─────────────────────────────────────────────────
@@ -485,10 +483,6 @@ function FilePreviewModal({
             <div className="h-full flex items-center justify-center text-gray-500">
               <Loader2 size={20} className="animate-spin mr-2" />
               <span className="text-sm">Loading…</span>
-            </div>
-          ) : kind === "viewer" ? (
-            <div className="h-full p-3">
-              <MoleculeViewer fileContent={content!} fileName={name} inline />
             </div>
           ) : (
             <pre className="h-full overflow-auto p-4 text-[11px] font-mono text-gray-300 leading-relaxed whitespace-pre-wrap break-all bg-gray-950">
@@ -564,6 +558,7 @@ function ProgressTab({
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [deletingPath, setDeletingPath] = useState<string | null>(null);
+  const [trajectoryKey, setTrajectoryKey] = useState(0);
 
   // Archive panel
   const [showArchive, setShowArchive] = useState(false);
@@ -585,6 +580,9 @@ function ProgressTab({
   };
 
   const refreshFiles = useCallback(() => {
+    // Clear stale files immediately so old session's trajectory doesn't linger
+    setAllFiles([]);
+    setSimFiles([]);
     setFilesLoading(true);
     listFiles(sessionId)
       .then(({ files }) => {
@@ -774,9 +772,26 @@ function ProgressTab({
         icon={<Play size={13} />}
         title="Trajectory"
         accent="blue"
+        action={
+          runStatus === "finished" ? (
+            <button
+              onClick={() => { refreshFiles(); setTrajectoryKey((k) => k + 1); }}
+              className="p-1 text-gray-500 hover:text-gray-300 transition-colors"
+              title="Refresh trajectory"
+            >
+              <RefreshCw size={13} className={filesLoading ? "animate-spin" : ""} />
+            </button>
+          ) : undefined
+        }
       >
-        {runStatus === "finished" && trajectoryFile && topologyFile ? (
+        {runStatus === "finished" && filesLoading ? (
+          <div className="flex items-center gap-2 py-2 text-gray-500">
+            <Loader2 size={13} className="animate-spin" />
+            <span className="text-xs">Loading trajectory…</span>
+          </div>
+        ) : runStatus === "finished" && trajectoryFile && topologyFile ? (
           <TrajectoryViewer
+            key={trajectoryKey}
             sessionId={sessionId}
             topologyPath={topologyFile.path}
             trajectoryPath={trajectoryFile.path}
@@ -995,11 +1010,13 @@ function MoleculeTab({
   const [fileRefresh, setFileRefresh] = useState(0);
   const [viewLoading, setViewLoading] = useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = useState<string | null>(null);
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [agentOpen, setAgentOpen] = useState(false);
   const [expandedRoots, setExpandedRoots] = useState<Record<string, boolean>>({});
 
   const refreshFiles = useCallback(() => {
     setLoading(true);
+    setFiles([]);  // clear stale list from previous session immediately
     listFiles(sessionId)
       .then(({ files, work_dir }) => {
         const base = work_dir.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -1184,6 +1201,13 @@ function MoleculeTab({
                             : null}
                           {isSelected ? "Selected" : "Select"}
                         </button>
+                        <button
+                          onClick={() => setPreviewPath(f)}
+                          title="Preview file content"
+                          className="flex items-center justify-center p-1.5 rounded-md text-gray-400 hover:text-indigo-300 hover:bg-indigo-900/20 border border-gray-700/50 hover:border-indigo-800/40 transition-colors flex-shrink-0"
+                        >
+                          <Eye size={11} />
+                        </button>
                         <a
                           href={downloadUrl(sessionId, f)}
                           download={name}
@@ -1217,6 +1241,9 @@ function MoleculeTab({
 
       {agentOpen && (
         <AgentModal sessionId={sessionId} agentType="paper" onClose={() => setAgentOpen(false)} />
+      )}
+      {previewPath && (
+        <FilePreviewModal sessionId={sessionId} path={previewPath} onClose={() => setPreviewPath(null)} />
       )}
     </div>
   );
@@ -2053,6 +2080,8 @@ export default function MDWorkspace({ sessionId, showNewForm, onSessionCreated, 
       try {
         const status = await getSimulationStatus(sessionId);
         if (cancelled) return;
+        // Re-check after async gap — reset effect may have updated status to "failed"
+        if ((simRunStatusRef.current as string) === "failed") return;
         const mappedStatus: "standby" | "running" | "finished" | "failed" =
           status.status === "finished" ? "finished"
             : status.status === "failed" ? "failed"

@@ -101,9 +101,12 @@ export const useSessionStore = create<SessionState>((set) => ({
 
   setSessionRunStatus: (sessionId, runStatus) =>
     set((state) => ({
-      sessions: state.sessions.map((s) =>
-        s.session_id === sessionId ? { ...s, run_status: runStatus } : s
-      ),
+      sessions: state.sessions.map((s) => {
+        if (s.session_id !== sessionId) return s;
+        // "failed" is sticky: only a new simulation start ("running") can clear it
+        if (s.run_status === "failed" && runStatus !== "running") return s;
+        return { ...s, run_status: runStatus };
+      }),
     })),
 
   addUserMessage: (text) =>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { FlaskConical, Plus, LogOut, Pencil, Check, X, Settings, Trash2, Info, Eye, EyeOff } from "lucide-react";
+import { FlaskConical, Plus, LogOut, Pencil, Check, X, Settings, Trash2, Info, Eye, EyeOff, Loader2 } from "lucide-react";
 import { useSessionStore } from "@/store/sessionStore";
 import { logout, getUsername } from "@/lib/auth";
 import { updateNickname, restoreSession, deleteSession, getApiKeys, setApiKey, getSessionRunStatus } from "@/lib/api";
@@ -43,6 +43,7 @@ function SessionItem({
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [loading, setLoading] = useState(false);
   const nick = s.nickname || s.work_dir.split("/").pop() || s.session_id.slice(0, 8);
   const [draft, setDraft] = useState(nick);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -143,16 +144,22 @@ function SessionItem({
       <div
         className="flex-1 min-w-0 px-3 py-2.5"
         onClick={async () => {
-          if (editing || confirming) return;
+          if (editing || confirming || loading) return;
+          setLoading(true);
           await restoreSession(s.session_id, s.work_dir, s.nickname);
-          getSessionRunStatus(s.session_id)
-            .then(({ run_status }) => onRunStatusRead(run_status))
-            .catch(() => {});
+          try {
+            const { run_status } = await getSessionRunStatus(s.session_id);
+            onRunStatusRead(run_status);
+          } catch { /* ignore */ }
           onSelect();
+          setLoading(false);
         }}
       >
         <div className="flex items-center gap-1.5 mb-0.5">
-          <span className={statusDotClass(s.run_status)} />
+          {loading
+            ? <Loader2 size={8} className="animate-spin text-gray-400 flex-shrink-0" />
+            : <span className={statusDotClass(s.run_status)} />
+          }
           {editing ? (
             <div className="flex items-center gap-1 flex-1 min-w-0" onClick={(e) => e.stopPropagation()}>
               <input
@@ -175,7 +182,9 @@ function SessionItem({
               </button>
             </div>
           ) : (
-            <span className="text-xs font-medium truncate flex-1">{nick}</span>
+            <span className={`text-xs font-medium truncate flex-1 ${loading ? "text-gray-500" : ""}`}>
+              {loading ? "Loading…" : nick}
+            </span>
           )}
         </div>
         {!editing && (
